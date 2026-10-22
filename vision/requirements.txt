@@ -1,0 +1,16 @@
+# The Signal Lab vision service.
+#
+# Pins matter here:
+#   numpy>=2.5   -> numpy 2.2.x ships a MinGW-built cp315 wheel that hard-crashes on import.
+#   opencv<5      -> OpenCV 5's rewritten UVC backend could not open the laptop webcam at all.
+mediapipe>=1.1.1
+numpy>=2.5,<3
+opencv-contrib-python>=4.11,<5
+websockets>=13
+pygrabber>=0.2
+# The skin stretch effect: drawn on the graphics card (moderngl), physics compiled (numba).
+moderngl>=5.13
+numba>=0.68
+
+# dev
+pytest>=8

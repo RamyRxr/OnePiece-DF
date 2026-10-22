@@ -1,0 +1,9 @@
+models/
+records/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+# Per-player calibration: measurements of a real face. Not for a repo.
+baseline.json
