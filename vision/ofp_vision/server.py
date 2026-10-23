@@ -8,6 +8,8 @@ Run it:
 Keyboard controls in the lab window:
     c   start calibration (3 second neutral capture)
     r   reset the baseline and recalibrate
+    h   clean view: hide the landmarks and grab drawings
+    v   start / stop recording a clip (see clips.py)
     q   quit
 """
 
@@ -28,6 +30,7 @@ import numpy as np
 
 from .baseline import load_baseline, save_baseline
 from .capture import CameraSource
+from .clips import ClipSwitch, frame_payload
 from .config import Config
 from .lab import PANEL_HEIGHT, LabOverlay, fit_video
 from .landmarks import Tracker
@@ -124,16 +127,7 @@ class FrameRecorder:
         self.count = 0
 
     def write(self, frame: Frame) -> None:
-        payload = {
-            "t": round(frame.t_ms, 2),
-            "face": [[round(v, 5) for v in p] for p in frame.face] if frame.face else None,
-            "bs": {k: round(v, 4) for k, v in frame.blendshapes.items()},
-            "hands": [
-                {"h": h.handedness, "lm": [[round(v, 5) for v in p] for p in h.landmarks]}
-                for h in frame.hands
-            ],
-            "pose": [[round(v, 5) for v in p] for p in frame.pose] if frame.pose else None,
-        }
+        payload = frame_payload(frame)
         self._handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
         # Flush every frame: a session killed mid-run should still be a valid
         # recording up to the last complete frame, not a truncated blob.
@@ -329,6 +323,8 @@ class Lab:
     effect_failures: int = 0
     # Hide the landmarks and grab drawings (key h), to judge the effect.
     clean: bool = False
+    # The REC line while a clip is being recorded (key v).
+    recording: str | None = None
 
     def _stretched(self, bgr: np.ndarray, frame: Frame, result: StepResult) -> np.ndarray:
         """The camera image with the stretch drawn in - or, if the effect
@@ -382,7 +378,7 @@ class Lab:
             "PINCH a ring (ear, nose, jaw, cheek, mouth)",
             "or a finger of your other hand - one hand,",
             "or both at once. PULL, then OPEN to fire",
-            "c calibrate   r reset   h clean view   q quit",
+            self.recording or "c calibrate  r reset  h clean  v record  q quit",
         ]
         if self.overlay is None:
             self.overlay = self._open_window((preview.shape[1], preview.shape[0]))
@@ -418,6 +414,28 @@ def handle_key(key: int, pipeline: Pipeline, t_ms: float) -> bool:
     return True
 
 
+def show_lab(
+    lab: Lab,
+    clips: ClipSwitch,
+    inputs: Inputs,
+    captured: tuple[Frame, np.ndarray | None],
+    result: StepResult,
+    pipeline: Pipeline,
+    clock: FrameClock,
+) -> bool:
+    """Record the frame if a clip is running, draw the lab and apply its
+    keys. Returns False when the user asked to quit."""
+    frame, bgr = captured
+    if bgr is not None:
+        clips.write(bgr, frame)
+    labelled = result.frame if result.frame is not None else frame
+    lab.recording = clips.status()
+    key = lab.show(inputs, labelled, bgr, result, pipeline, (clock.fps, inputs.last_infer_ms))
+    if key == ord("v") and bgr is not None:
+        clips.toggle((bgr.shape[1], bgr.shape[0]))
+    return handle_key(key, pipeline, frame.t_ms)
+
+
 # --- Main loop --------------------------------------------------------------
 
 
@@ -430,6 +448,7 @@ def run(args: argparse.Namespace, config: Config, inputs: Inputs) -> int:
     stream = StreamServer(config.server.host, config.server.port)
     stream.start()
     lab = Lab(config, make_effect()) if config.server.show_lab_window else None
+    clips = ClipSwitch(config.clips_dir, config.capture.fps)
     recorder = FrameRecorder(Path(args.record)) if args.record else None
     clock = FrameClock(config.capture.fps)
     deadline = clock.start + args.duration if args.duration else None
@@ -458,13 +477,12 @@ def run(args: argparse.Namespace, config: Config, inputs: Inputs) -> int:
             stream.publish(result.message)
 
             if lab is not None:
-                labelled = result.frame if result.frame is not None else frame
-                key = lab.show(inputs, labelled, bgr, result, pipeline, (clock.fps, inputs.last_infer_ms))
-                running = handle_key(key, pipeline, frame.t_ms) and running
+                running = show_lab(lab, clips, inputs, (frame, bgr), result, pipeline, clock) and running
             clock.tick()
     except KeyboardInterrupt:
         pass
     finally:
+        clips.stop()
         if lab is not None:
             cv2.destroyAllWindows()
         if recorder:

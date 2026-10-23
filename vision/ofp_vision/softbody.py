@@ -64,6 +64,11 @@ class SoftBody:
 
     def __init__(self, rest: np.ndarray, edges: np.ndarray, pinned: np.ndarray) -> None:
         self.positions = rest.astype(np.float64).copy()
+        # How strongly points are held to where they rest, as a share of
+        # TETHER_STIFFNESS (the springs keep their own stiffness). It may be
+        # changed between steps: a held finger is tethered weakly, a let-go
+        # one fully, so it snaps home.
+        self.tether = 1.0
         self.velocities = np.zeros_like(self.positions)
         self.edges = np.ascontiguousarray(edges, dtype=np.int64)
         self._pinned = pinned.astype(bool)
@@ -94,10 +99,18 @@ class SoftBody:
         _simulate(
             self.positions, self.velocities, rest, inverse_mass, self.edges, rest_lengths, self._compliance,
             grabbed, np.ascontiguousarray(start), np.ascontiguousarray(end), firm, grip_compliance,
-            FRAME_DT, SUBSTEPS, 1.0 / TETHER_STIFFNESS, DAMPING,
+            FRAME_DT, SUBSTEPS, 1.0 / (TETHER_STIFFNESS * self.tether), DAMPING,
         )
         self._targets = end.copy() if len(grabbed) else None
         self._grabbed = grabbed.copy()
+
+    def carry(self, moved: np.ndarray) -> None:
+        """The body part moved: each point's resting place by `moved` (N, 3).
+        Every point goes with it, so moving the head is not a pull on the
+        skin - only a stretch is left to the physics."""
+        self.positions += moved
+        if self._targets is not None:
+            self._targets = self._targets + moved[self._grabbed]
 
     @property
     def pinned(self) -> np.ndarray:

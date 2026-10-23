@@ -22,7 +22,7 @@ but not its brightness.
 
 When the segmentation model is available (`landmarks.SkinSegmenter`), the
 masks come from its per-pixel labels instead - real edges rather than
-guessed shapes (`segmented_face_masks`, `segmented_digit_mask`). The
+guessed shapes (`segmented_face_masks`; a finger's in `fingers.py`). The
 colour-based ones above remain the fallback.
 """
 
@@ -308,6 +308,11 @@ def _labels_as(segmentation: np.ndarray, wanted, size: tuple[int, int], window: 
     return (np.clip(scaled, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
 
 
+def body_skin(segmentation: np.ndarray, size: tuple[int, int], window: Window) -> np.ndarray:
+    """Where the segmentation sees body skin (hands, arms), over `window`."""
+    return _labels_as(segmentation, (SEGMENT_BODY_SKIN,), size, window)
+
+
 def segmented_face_masks(
     segmentation: np.ndarray, face: list[Point], size: tuple[int, int], window: Window
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -341,36 +346,14 @@ def segmented_face_masks(
     return skin, mouth
 
 
-def _distance_to_digit(points: np.ndarray, joints: np.ndarray) -> np.ndarray:
-    """Distance from each (N, 2) point to a finger's chain of segments."""
+def distance_to_chain(points: np.ndarray, joints: np.ndarray) -> np.ndarray:
+    """Distance from each (N, 2) point to a chain of segments (a finger)."""
     best = np.full(len(points), np.inf)
     for a, b in zip(joints[:-1], joints[1:]):
         ab = b - a
         t = np.clip(((points - a) @ ab) / max(float(ab @ ab), 1e-9), 0.0, 1.0)
         best = np.minimum(best, np.linalg.norm(points - (a + t[:, None] * ab), axis=1))
     return best
-
-
-def segmented_digit_mask(
-    segmentation: np.ndarray, hand: HandObservation, digit: str, size: tuple[int, int], window: Window
-) -> np.ndarray:
-    """One finger's own skin over `window`: body skin within the finger's
-    own width of its centre line, and nearer to it than to any other finger
-    of the hand. The model's labels are coarse - they blur skin over the air
-    around a hand - so the finger's shape decides where it ends."""
-    body = _labels_as(segmentation, (SEGMENT_BODY_SKIN,), size, window)
-    lm = hand.landmarks
-    palm = _length_px(lm[HAND_WRIST], lm[HAND_MIDDLE_MCP], size)
-    ys, xs = np.mgrid[window.y0 : window.y1, window.x0 : window.x1]
-    points = np.stack([xs.ravel() + 0.5, ys.ravel() + 0.5], axis=1).astype(np.float64)
-    nearest = {
-        name: _distance_to_digit(points, np.array([[lm[i][0] * size[0], lm[i][1] * size[1]] for i in joints]))
-        for name, joints in HAND_DIGITS.items()
-    }
-    others = np.min([d for name, d in nearest.items() if name != digit], axis=0)
-    own = nearest[digit]
-    region = ((own < others) & (own < FINGER_HALF_WIDTH * palm)).reshape(window.shape)
-    return np.where(region, body, 0).astype(np.uint8)
 
 
 def digit_mask(hand: HandObservation, digit: str, size: tuple[int, int], window: Window) -> np.ndarray:

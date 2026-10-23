@@ -185,6 +185,8 @@ class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     models_dir: Path = MODELS_DIR
     baseline_path: Path = VISION_DIR / "baseline.json"
+    # Clips recorded in the lab (key v), for tuning the stretch on real footage.
+    clips_dir: Path = VISION_DIR / "records" / "clips"
 
     def model_path(self, name: str) -> Path:
         return self.models_dir / MODEL_FILES[name]

@@ -61,10 +61,19 @@ landmarks and grab drawings, to judge the stretch as it really looks.
 The stretch is **skin physics drawn on the graphics card** - the way games
 and AR filters do it:
 
-- when you pinch, a fine grid of ~4,000 points is laid over the skin around
-  the pinch, glued to your face (it moves, turns and scales with your head).
-  Each hand gets its own; two pinches close together on the face hold the
-  same grid;
+- when you pinch your face, a fine grid of ~4,000 points is laid over the
+  skin around the pinch, glued to your face. It moves, turns and scales with
+  your head **exactly** - head movement is never a pull on the skin, so the
+  face never lags behind like a mask. Each hand gets its own; two pinches
+  close together on the face hold the same grid;
+- a **finger is a rubber tube**, not a sheet: a chain of points along the
+  finger from the knuckle to the tip. The knuckle end stays on the hand; from
+  the pinch to the tip, the finger travels whole with your pinching fingers
+  (the nail stays a nail); in between it stretches nearly straight, like a
+  rubber band, and a little thinner (to 70% at most). Let go and it snaps
+  home. The tube is painted with the finger's own pixels, and follows your
+  palm - which the tracker holds well even while your other hand covers the
+  finger ([`fingers.py`](ofp_vision/fingers.py));
 - every point has mass, springs to its neighbours, and a soft tether to
   where it rests. Your fingers hold the pinched points - firmly at the
   centre of the pinch, gently at its rim - and the rest follows with a
@@ -84,11 +93,18 @@ and AR filters do it:
   pixel looks up where it came from in the skin mask and shows only if that
   spot was skin. However far the mesh stretches, the wall beside a finger
   or the room beside a face can never come along with it;
+- **the real part leaves the picture**: where a finger (or an ear) was and no
+  longer is, what is behind it shows - not a ghost of it next to its
+  stretched self. The webcam does not move, so the room behind you is
+  remembered, learned slowly from everything the segmentation calls
+  background (never near your hands). Where the room was never seen, the
+  spot is filled from the colours around it ([`room.py`](ofp_vision/room.py));
 - the mesh is drawn on the GPU, painted with your own camera image and lit
   from its 3D shape (antialiased, ~11-22ms a frame at 720p).
 
-The pieces: [`skinmesh.py`](ofp_vision/skinmesh.py) (the grid and its
-springs), [`softbody.py`](ofp_vision/softbody.py) (the physics - XPBD,
+The pieces: [`skinmesh.py`](ofp_vision/skinmesh.py) (the face's grid and
+its springs), [`fingers.py`](ofp_vision/fingers.py) (the rubber finger),
+[`softbody.py`](ofp_vision/softbody.py) (the physics - XPBD,
 compiled with numba), [`gpu.py`](ofp_vision/gpu.py) (drawing, moderngl),
 [`stretch.py`](ofp_vision/stretch.py) (ties them together), with what counts
 as skin in [`skin.py`](ofp_vision/skin.py). The feel is the constants at the
@@ -182,6 +198,7 @@ threshold (the grey tick). Drag the window's corner to resize it.
 | `c` | Recalibrate (3s neutral capture) |
 | `r` | Reset the baseline and recalibrate |
 | `h` | Clean view: hide the landmarks and grab drawings |
+| `v` | Start / stop recording a clip (see below) |
 | `q` | Quit |
 
 On first run it calibrates automatically and saves `baseline.json`. Sit
@@ -237,6 +254,22 @@ stretch - that is how to tune `GrabConfig` without re-doing the gesture.
 
 Other flags: `--channel face.cheekL --watch` to see a live bar chart of one
 channel, `--csv out.csv` to dump the whole time series.
+
+### Clips: tuning the stretch on real footage
+
+Press **v** in the lab, do a few stretches, press **v** again (it stops by
+itself after 30 seconds). The clip - the raw camera video, every frame's
+tracking, and the skin segmentation exactly as the lab had it - is saved
+under `records/clips/`. Then run the stretch on it, as often as it takes:
+
+```powershell
+.venv\Scripts\python.exe -m ofp_vision.tools.render_clip records/clips/clip-20261023-101500
+```
+
+It needs no camera and no MediaPipe, so the same real footage can be
+compared before and after a change. It writes `render/rendered.avi` (camera
+and stretch side by side, mirrored like the lab) and a still every few
+frames while something is grabbed, labelled with what each hand holds.
 
 ---
 
@@ -417,16 +450,19 @@ ofp_vision/
   baseline.py    calibration capture + persistence
   protocol.py    wire format
   lab.py         overlay window
+  clips.py       recording clips of the real camera (key v), and playing them back
+  room.py        the room behind the player, remembered - what a pulled part leaves
   light.py       the room's light, judged from the face (lights stretched skin)
   warp.py        the stretch effect: elastic-skin physics, lighting, rendering (cosmetic)
   skin.py        what counts as skin: face, ears, fingers, mouth, skin colour
-  skinmesh.py    the skin mesh: a grid glued to the face or finger, and its springs
+  skinmesh.py    the face's skin mesh: a grid glued to the face, and its springs
+  fingers.py     the rubber finger: a chain along the finger, drawn as a tube
   softbody.py    skin physics: mass, springs, tethers (XPBD, numba)
   gpu.py         draws the skin mesh on the graphics card (moderngl)
   stretch.py     the skin-physics stretch effect: mesh + physics + GPU, per frame
   server.py      camera → pipeline → socket + lab window
   synthetic.py   generated frames (incl. a pinch-grab), for CI and protocol checks
-  tools/         fetch_models, probe, probe_client, replay
+  tools/         fetch_models, probe, probe_client, replay, render_clip
 tests/           synthetic-landmark tests, no camera needed
 ```
 
@@ -454,7 +490,7 @@ skipping anything whose name contains "virtual", "obs", "snap" and friends.
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-189 tests, no camera required. They lock in the properties that matter:
+213 tests, no camera required. They lock in the properties that matter:
 scale invariance (multiply every landmark by 2 and nothing changes),
 responsiveness (move the cheekbone and the ear channel goes up),
 symmetry (a symmetric face gives exactly zero asymmetry), the calibration

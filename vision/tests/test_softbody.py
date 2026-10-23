@@ -193,3 +193,20 @@ def test_a_new_grip_starts_from_where_its_skin_is():
     body.step(rest, far, before)
     neighbours = np.nonzero(np.linalg.norm(rest[:, :2] - [90.0, 0.0], axis=1) <= 30.0)[0]
     assert np.abs(body.positions[neighbours, :2] - rest[neighbours, :2]).max() < 3.0
+
+
+def test_a_moving_body_part_carries_its_skin_without_lag():
+    """Moving the head is not a pull on the skin: carried along with its
+    resting places, every point stays exactly on them - no copy of the face
+    sliding behind the real one, like a mask."""
+    body, rest, _ = make_body()
+    for frame in range(1, 6):
+        moved = rest + [12.0 * frame, -5.0 * frame, 0.0]
+        body.carry(moved - body_rest(rest, frame - 1))
+        body.step(moved, NOTHING, np.zeros((0, 3)))
+    assert np.abs(body.positions - moved).max() < 0.01
+    assert body.settled(moved)
+
+
+def body_rest(rest: np.ndarray, frame: int) -> np.ndarray:
+    return rest + [12.0 * frame, -5.0 * frame, 0.0]

@@ -1,13 +1,12 @@
-"""The skin mesh: a fine grid of points over the skin being pinched.
+"""The skin mesh: a fine grid of points over the face skin being pinched.
 
-When a grab starts, a square patch of skin around the pinch is covered with
-a grid of a few thousand points. The grid is laid out in a frame glued to
-the body part - for a face, its origin is the face's centre, its x axis the
-eye line and its unit the distance between the eyes; for a finger, the tip,
-the finger's direction and the palm's length. Each point remembers where it
+When a grab on the face starts, a square patch of skin around the pinch is
+covered with a grid of a few thousand points. The grid is laid out in a frame
+glued to the face: its origin is the face's centre, its x axis the eye line
+and its unit the distance between the eyes. Each point remembers where it
 sits in that frame, so when the head moves, turns or comes closer, every
 point's resting place moves with it. Physics (`softbody.py`) then moves the
-points away from where they rest.
+points away from where they rest. (A finger is a tube: `fingers.py`.)
 
 The grid is triangulated for drawing, and joined by springs for the physics:
 to its four neighbours (stretch), its four diagonals (shear), and the points
@@ -20,8 +19,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .indices import FACE_EYE_OUTER_L, FACE_EYE_OUTER_R, FACE_OVAL, HAND_DIGITS, HAND_MIDDLE_MCP, HAND_WRIST
-from .signals import HandObservation, Point
+from .indices import FACE_EYE_OUTER_L, FACE_EYE_OUTER_R, FACE_OVAL
+from .signals import Point
 
 
 @dataclass(frozen=True)
@@ -62,16 +61,6 @@ def face_frame(face: list[Point], size: tuple[int, int]) -> BodyFrame | None:
     return _frame(centre, left - right, apart)
 
 
-def finger_frame(hand: HandObservation, digit: str, size: tuple[int, int]) -> BodyFrame | None:
-    """Origin at the fingertip, x along the finger, unit = palm length."""
-    lm = hand.landmarks
-    knuckle, tip = _px(lm[HAND_DIGITS[digit][0]], size), _px(lm[HAND_DIGITS[digit][3]], size)
-    palm = float(np.linalg.norm(_px(lm[HAND_MIDDLE_MCP], size) - _px(lm[HAND_WRIST], size)))
-    if palm < 1.0 or np.linalg.norm(tip - knuckle) < 1.0:
-        return None
-    return _frame(tip, tip - knuckle, palm)
-
-
 @dataclass(frozen=True)
 class SkinPatch:
     """A square grid of points, in frame coordinates, with its triangles and
@@ -110,3 +99,12 @@ def _springs(index: np.ndarray) -> np.ndarray:
         (index[:-2, :], index[2:, :]),  # bending, down
     ]
     return np.concatenate([np.stack([a.ravel(), b.ravel()], axis=1) for a, b in pairs]).astype(np.int32)
+
+
+@dataclass(frozen=True)
+class Hold:
+    """One hand's pinch on a mesh: the points it holds, and how firmly."""
+
+    target: str
+    core: np.ndarray
+    grip: np.ndarray

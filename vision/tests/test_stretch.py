@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from face_fixture import EYE_L, H, W, image, landmarks, norm, px
+from face_fixture import CENTRE, EYE_L, H, W, image, landmarks, norm, px
 
 moderngl = pytest.importorskip("moderngl")
 try:
@@ -85,6 +85,18 @@ def test_the_eyes_and_the_room_beside_the_face_never_move(stretcher):
     # Allowing 1 level: the GPU's 8-bit round trip rounds.
     assert np.abs(out[y - 4 : y + 4, x - 8 : x + 8].astype(int) - img[y - 4 : y + 4, x - 8 : x + 8]).max() <= 1
     assert (room_like(img) & ~room_like(out) & (np.arange(H)[:, None] < px(norm(0, -0.21))[1])).sum() == 0
+
+
+def test_a_cheek_pull_leaves_the_far_side_of_the_face_alone(stretcher):
+    """No seam where the mesh ends: just beyond its edge, across the face from
+    the pull, nothing changes (it once showed there as a line of wall)."""
+    img, out = hold(stretcher, pulling("cheekL", 0.3, 0.0))
+    (session,) = stretcher._sessions
+    edge = int(session.frame.to_image(session.patch.local)[:, 0].min())
+    let_go(stretcher)
+    (_, y0), (_, y1) = px(norm(0.0, -0.02)), px(norm(0.0, 0.03))
+    band = slice(edge - 15, edge - 1)
+    assert np.abs(out[y0:y1, band].astype(int) - img[y0:y1, band]).max() <= 2
 
 
 def test_the_teeth_never_stretch(stretcher):
@@ -206,5 +218,64 @@ def test_a_finger_pulled_across_the_wall_never_carries_the_wall(stretcher):
     # red rises. Moved wall is different: the colour changes with no skin
     # added. That must never happen.
     no_skin_added = out[..., 2].astype(int) <= img[..., 2].astype(int) + 5
-    moved_wall = changed & room_like(img) & no_skin_added
+    # Where the finger itself was is refilled with what is behind it (the
+    # next test) - give or take a pixel, as the segmentation is never exact.
+    import cv2
+
+    finger = cv2.resize(labels, (W, H), interpolation=cv2.INTER_NEAREST) > 0
+    finger = cv2.dilate(finger.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+    moved_wall = changed & room_like(img) & no_skin_added & ~finger
     assert moved_wall.sum() == 0, "no piece of the wall came along with the finger"
+
+
+def test_where_a_finger_was_pulled_away_from_shows_the_wall(stretcher):
+    """No ghost: the top of the finger, pulled off sideways, is no longer
+    also drawn where it was - the wall behind it shows there."""
+    hand, img, labels = hand_on_the_wall()
+    tip = hand.landmarks[8]
+    frame = Frame(t_ms=0.0, face=FACE, hands=[hand], segmentation=labels)
+    out = img
+    for i in range(25):
+        k = min(1.0, (i + 1) / 8)
+        grab = GrabState(active=True, hand="Right", target="finger.Left.index", anchor=tip[:2],
+                         pull=(0.12 * k, -0.05 * k))
+        stretcher.update({"Right": grab}, frame, (W, H))
+        out = stretcher.warp(img)
+    let_go(stretcher)
+
+    x, y = int(tip[0] * W), int(tip[1] * H) + 20
+    assert not room_like(img)[y, x], "the finger was here"
+    assert room_like(out)[y - 2 : y + 3, x - 2 : x + 3].all(), "and now the wall is"
+
+
+def test_moving_the_head_after_a_pull_leaves_no_mask_behind(stretcher):
+    """Let go and keep moving your head: the stretch snaps back and is gone,
+    and your face is just the camera's face again - not a copy of it sliding
+    along behind, like a mask."""
+    hold(stretcher, pulling("cheekL", 0.3, 0.0))
+    for i in range(1, 13):
+        centre = (CENTRE[0] + 0.004 * i, CENTRE[1])  # ~5px a frame
+        stretcher.update({}, Frame(t_ms=0.0, face=landmarks(centre=centre)), (W, H))
+        stretcher.warp(image(centre=centre))
+    assert not stretcher._sessions
+
+
+def test_a_finger_pinched_halfway_takes_its_tip_along_whole(stretcher):
+    """Rubber, not a noodle: past the pinch the finger travels whole and as
+    wide as it was; between the knuckle and the pinch, it stretches."""
+    hand, img, labels = hand_on_the_wall()
+    tip = hand.landmarks[8]
+    frame = Frame(t_ms=0.0, face=FACE, hands=[hand], segmentation=labels)
+    out = img
+    for i in range(25):
+        k = min(1.0, (i + 1) / 8)
+        grab = GrabState(active=True, hand="Right", target="finger.Left.index", anchor=(tip[0], tip[1] + 0.1),
+                         pull=(0.15 * k, -0.12 * k))
+        stretcher.update({"Right": grab}, frame, (W, H))
+        out = stretcher.warp(img)
+    let_go(stretcher)
+
+    x, y = int((tip[0] + 0.15) * W), int((tip[1] - 0.12 + 0.05) * H)
+    row = out[y, x - 25 : x + 25].astype(int)
+    skin = (row[:, 2] > 150) & (row[:, 2] > row[:, 0])
+    assert skin.sum() >= 13, "the top of the finger, moved whole: as wide as the finger (16px)"

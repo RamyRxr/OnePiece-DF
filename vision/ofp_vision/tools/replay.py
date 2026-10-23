@@ -25,34 +25,13 @@ from pathlib import Path
 from ..baseline import BaselineRecorder
 from ..config import Config
 from ..pipeline import GRAB_RELEASE_CHANNELS, Pipeline
-from ..signals import Frame, HandObservation
+from ..clips import frame_from_payload
+from ..signals import Frame
 
 
 def load_frames(path: Path) -> list[Frame]:
-    frames: list[Frame] = []
     with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            data = json.loads(line)
-            hands = [
-                HandObservation(
-                    handedness=h["h"],
-                    landmarks=[tuple(p) for p in h["lm"]],
-                )
-                for h in data.get("hands", [])
-            ]
-            frames.append(
-                Frame(
-                    t_ms=float(data["t"]),
-                    face=[tuple(p) for p in data["face"]] if data.get("face") else None,
-                    blendshapes=data.get("bs", {}) or {},
-                    hands=hands,
-                    pose=[tuple(p) for p in data["pose"]] if data.get("pose") else None,
-                )
-            )
-    return frames
+        return [frame_from_payload(json.loads(line)) for line in handle if line.strip()]
 
 
 def percentile(values: list[float], pct: float) -> float:
