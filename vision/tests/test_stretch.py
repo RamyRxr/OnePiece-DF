@@ -92,25 +92,32 @@ def test_a_cheek_pull_leaves_the_far_side_of_the_face_alone(stretcher):
     the pull, nothing changes (it once showed there as a line of wall)."""
     img, out = hold(stretcher, pulling("cheekL", 0.3, 0.0))
     (session,) = stretcher._sessions
-    edge = int(session.frame.to_image(session.patch.local)[:, 0].min())
+    edge = int(session.rest()[:, 0].min())
     let_go(stretcher)
     (_, y0), (_, y1) = px(norm(0.0, -0.02)), px(norm(0.0, 0.03))
     band = slice(edge - 15, edge - 1)
     assert np.abs(out[y0:y1, band].astype(int) - img[y0:y1, band]).max() <= 2
 
 
-def test_the_teeth_never_stretch(stretcher):
-    img, out = hold(stretcher, pulling("lipBottom", 0.0, 0.15))
+def teeth_columns(frame: np.ndarray) -> np.ndarray:
+    """The columns where the mouth shows (white teeth), along its middle row."""
+    row = frame[px(norm(0.0, 0.09))[1]].astype(int)
+    return np.nonzero(row.min(axis=1) > 200)[0]
+
+
+def test_pulling_a_mouth_corner_stretches_the_mouth_itself(stretcher):
+    """Luffy's mouth: pulled at its corner, the mouth widens toward the pull -
+    not a strip of skin pulled out beside a mouth that stays as it was."""
+    img, out = hold(stretcher, pulling("mouthL", 0.15, 0.0))
     let_go(stretcher)
-    x, y = px(norm(0.0, 0.08))
-    assert np.abs(out[y - 2 : y + 2, x - 2 : x + 2].astype(int) - img[y - 2 : y + 2, x - 2 : x + 2]).max() <= 2
+    assert teeth_columns(out).max() > teeth_columns(img).max() + 40
 
 
 def test_let_go_it_snaps_back_quickly_and_is_dropped(stretcher):
     hold(stretcher, pulling("cheekL", 0.3, 0.0))
     (session,) = stretcher._sessions
     centre = session.holds["Right"].core[0]
-    rest = session.frame.to_image(session.patch.local[[centre]])[0]
+    rest = session.rest()[centre, :2]
     track = []
     for _ in range(90):
         stretcher.update({}, FRAME, (W, H))
@@ -262,7 +269,8 @@ def test_moving_the_head_after_a_pull_leaves_no_mask_behind(stretcher):
 
 def test_a_finger_pinched_halfway_takes_its_tip_along_whole(stretcher):
     """Rubber, not a noodle: past the pinch the finger travels whole and as
-    wide as it was; between the knuckle and the pinch, it stretches."""
+    wide as it was (turned to follow the pull); between the knuckle and the
+    pinch, it stretches."""
     hand, img, labels = hand_on_the_wall()
     tip = hand.landmarks[8]
     frame = Frame(t_ms=0.0, face=FACE, hands=[hand], segmentation=labels)
@@ -273,9 +281,37 @@ def test_a_finger_pinched_halfway_takes_its_tip_along_whole(stretcher):
                          pull=(0.15 * k, -0.12 * k))
         stretcher.update({"Right": grab}, frame, (W, H))
         out = stretcher.warp(img)
+    (session,) = stretcher._sessions
+    points = session.body.positions[:, :2].copy()
+    pivot = points[session.holds["Right"].core[0]]
     let_go(stretcher)
 
-    x, y = int((tip[0] + 0.15) * W), int((tip[1] - 0.12 + 0.05) * H)
-    row = out[y, x - 25 : x + 25].astype(int)
-    skin = (row[:, 2] > 150) & (row[:, 2] > row[:, 0])
+    # Across the held part, halfway from the pinch to the tip: the finger.
+    middle = (pivot + points[-3]) / 2
+    along = (points[-3] - pivot) / np.linalg.norm(points[-3] - pivot)
+    across = np.array([-along[1], along[0]])
+    line = np.round(middle + np.arange(-25, 26)[:, None] * across).astype(int)
+    colours = out[line[:, 1], line[:, 0]].astype(int)
+    skin = (colours[:, 2] > 150) & (colours[:, 2] > colours[:, 0])
     assert skin.sum() >= 13, "the top of the finger, moved whole: as wide as the finger (16px)"
+
+
+def test_a_hand_lost_for_a_moment_is_not_learned_as_background(stretcher):
+    """Pinching, one hand covers the other, and the tracker loses it for a few
+    frames. Its finger must not be learned as what is behind it - or the
+    ghost comes back the moment it is pulled away."""
+    hand, img, labels = hand_on_the_wall()
+    tip = hand.landmarks[8]
+    lost = Frame(t_ms=0.0, face=FACE, hands=[], segmentation=labels)
+    seen = Frame(t_ms=0.0, face=FACE, hands=[hand], segmentation=labels)
+    out = img
+    for i in range(25):
+        k = min(1.0, (i + 1) / 8)
+        grab = GrabState(active=True, hand="Right", target="finger.Left.index", anchor=tip[:2],
+                         pull=(0.12 * k, -0.05 * k))
+        stretcher.update({"Right": grab}, lost if 3 <= i < 9 else seen, (W, H))
+        out = stretcher.warp(img)
+    let_go(stretcher)
+
+    x, y = int(tip[0] * W), int(tip[1] * H) + 20
+    assert room_like(out)[y - 2 : y + 3, x - 2 : x + 3].all(), "the wall, not the finger learned while it was lost"

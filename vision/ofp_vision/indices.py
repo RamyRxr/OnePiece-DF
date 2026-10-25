@@ -103,6 +103,13 @@ HAND_DIGITS: dict[str, tuple[int, int, int, int]] = {
 
 HAND_DIGIT_ORDER = ("thumb", "index", "middle", "ring", "pinky")
 
+# The part of each digit that is a finger - that bends, is grabbed and
+# stretches - knuckle to tip. The thumb's first point is not its knuckle: it
+# is deep in the palm, by the wrist.
+HAND_FINGER_JOINTS: dict[str, tuple[int, ...]] = {
+    digit: joints[1:] if digit == "thumb" else joints for digit, joints in HAND_DIGITS.items()
+}
+
 HAND_MIDDLE_MCP = HAND_DIGITS["middle"][0]
 
 # The hand skeleton: bones as landmark pairs.

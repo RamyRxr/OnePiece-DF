@@ -119,6 +119,20 @@ class SkinRenderer:
         self._skin.filter = (moderngl.LINEAR, moderngl.LINEAR)
         self._skin.repeat_x = self._skin.repeat_y = False
 
+    def _vertex_array(self, positions, uv, skin_uv, normals, triangles):
+        """The mesh in GPU buffers: (vertex array, its buffers to release)."""
+        vertices = np.concatenate(
+            [positions.astype(np.float32), uv.astype(np.float32), skin_uv.astype(np.float32),
+             normals.astype(np.float32)],
+            axis=1,
+        )
+        vbo = self._ctx.buffer(np.ascontiguousarray(vertices).tobytes())
+        ibo = self._ctx.buffer(np.ascontiguousarray(triangles, dtype=np.int32).tobytes())
+        vao = self._ctx.vertex_array(
+            self._program, [(vbo, "3f 2f 2f 3f", "in_position", "in_uv", "in_skin_uv", "in_normal")], ibo
+        )
+        return vao, (vbo, ibo)
+
     def _resize(self, size: tuple[int, int]) -> None:
         if self._size == size:
             return
@@ -154,7 +168,7 @@ class SkinRenderer:
             raise RuntimeError("set_skin() before draw()")
         size = (bgr.shape[1], bgr.shape[0])
         self._resize(size)
-        self._texture.write(np.ascontiguousarray(bgr).tobytes(), alignment=1)
+        self._texture.write(np.ascontiguousarray(bgr, dtype=np.uint8).tobytes(), alignment=1)
         self._texture.use(0)
         self._skin.use(1)
         program = self._program
@@ -164,16 +178,7 @@ class SkinRenderer:
         program["camera"].value = 0
         program["skin"].value = 1
 
-        vertices = np.concatenate(
-            [positions.astype(np.float32), uv.astype(np.float32), skin_uv.astype(np.float32),
-             normals.astype(np.float32)],
-            axis=1,
-        )
-        vbo = self._ctx.buffer(np.ascontiguousarray(vertices).tobytes())
-        ibo = self._ctx.buffer(np.ascontiguousarray(triangles, dtype=np.int32).tobytes())
-        vao = self._ctx.vertex_array(
-            program, [(vbo, "3f 2f 2f 3f", "in_position", "in_uv", "in_skin_uv", "in_normal")], ibo
-        )
+        vao, buffers = self._vertex_array(positions, uv, skin_uv, normals, triangles)
         try:
             self._target.use()
             self._target.clear(0.0, 0.0, 0.0, 0.0)
@@ -184,7 +189,7 @@ class SkinRenderer:
             data = self._resolved.read(viewport=(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0), components=4)
         finally:
             vao.release()
-            vbo.release()
-            ibo.release()
+            for buffer in buffers:
+                buffer.release()
         pixels = np.frombuffer(data, dtype=np.uint8).reshape(box.y1 - box.y0, box.x1 - box.x0, 4)
         return pixels[..., :3].astype(np.float32), pixels[..., 3].astype(np.float32) / 255.0

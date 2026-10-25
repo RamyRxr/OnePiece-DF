@@ -1,13 +1,16 @@
-"""The room behind the player, remembered - so a stretched part can leave it.
+"""The picture behind the hands, remembered - so a part pulled away can leave it.
 
-When a finger or an ear is pulled away, the spot where it was has to show
+When a finger (or an ear) is pulled off, the spot where it was has to show
 what is behind it, or the real one stays in the picture next to its stretched
-copy. The webcam does not move, so the room behind the player can be
-remembered: every pixel the segmentation calls background is blended into a
-picture of the room - slowly, so a passing shadow does not stick.
+self. The webcam does not move, and everything but the hands changes slowly,
+so everything but the hands is remembered, frame by frame: the room, the
+shirt, the face. Where a finger is now, the picture from before it got there
+is still remembered. Hands are never learned: they move fast, and they are
+what gets pulled away.
 
-Where the room was never seen (behind the body, which is always there), a
-hole is filled from the colours around it instead (`filled`).
+Where nothing was ever seen behind it (a hand that has not moved since the
+start), a hole is filled from the colours around it instead (`filled`) - and
+given the picture's own grain (`grain`), or it reads as a flat cut-out.
 """
 
 from __future__ import annotations
@@ -15,60 +18,70 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from .skin import SEGMENT_BACKGROUND, Window
+from .skin import Window
 
-# Each new look at a background pixel moves its remembered colour this far.
-ROOM_LEARNING = 0.1
-# Seen this much (0..1, ~7 looks) and the remembered colour is trusted.
+# Each new look moves a remembered colour this far: a change is learned in a
+# few frames.
+ROOM_LEARNING = 0.3
+# Seen this much (0..1, two looks) and the remembered colour is trusted.
 ROOM_KNOWN = 0.5
-# Background this close to the body is not learned: the labels are coarse,
-# and a few frames late.
-SAFETY_PX = 12
+# Remembered at this share of the camera's size: smooth anyway, and cheap.
+ROOM_SCALE = 0.5
 
 
 class RoomMemory:
-    """A slowly learned picture of the room, and how sure it is of each pixel."""
+    """The picture behind the hands, and how sure it is of each pixel."""
 
     def __init__(self) -> None:
         self._room: np.ndarray | None = None
         self._seen: np.ndarray | None = None
-        self._last_labels: np.ndarray | None = None
+        self._frame_size: tuple[int, int] | None = None
 
-    def is_new(self, labels: np.ndarray | None) -> bool:
-        """Whether `labels` is a segmentation not yet learned from."""
-        return labels is not None and labels is not self._last_labels
-
-    def update(self, bgr: np.ndarray, labels: np.ndarray | None, exclude: np.ndarray | None = None) -> None:
-        """Learn from a camera frame and its segmentation - once per new
-        segmentation (the frames in between carry the old one). `exclude`
-        (uint8, frame-sized) marks pixels not to learn, such as the hands."""
-        if not self.is_new(labels):
-            return
-        self._last_labels = labels
+    def update(self, bgr: np.ndarray, exclude: np.ndarray | None) -> None:
+        """Learn a camera frame - all of it but `exclude` (uint8, nonzero over
+        the hands; any size, it is scaled to the memory's)."""
         h, w = bgr.shape[:2]
-        if self._room is None or self._room.shape[:2] != (h, w):
-            self._room = np.zeros((h, w, 3), dtype=np.float32)
-            self._seen = np.zeros((h, w), dtype=np.float32)
-        background = cv2.resize(
-            (labels == SEGMENT_BACKGROUND).astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST
-        )
-        reach = 2 * SAFETY_PX + 1
-        background = cv2.erode(background, np.ones((reach, reach), dtype=np.uint8))
+        size = (max(1, round(w * ROOM_SCALE)), max(1, round(h * ROOM_SCALE)))
+        if self._room is None or self._frame_size != (w, h):
+            self._room = np.zeros((size[1], size[0], 3), dtype=np.float32)
+            self._seen = np.zeros((size[1], size[0]), dtype=np.float32)
+            self._frame_size = (w, h)
+        small = cv2.resize(bgr, size, interpolation=cv2.INTER_AREA).astype(np.float32)
+        learn = np.full((size[1], size[0]), 255, dtype=np.uint8)
         if exclude is not None:
-            background[exclude > 0] = 0
+            learn[cv2.resize(exclude, size, interpolation=cv2.INTER_NEAREST) > 0] = 0
         # Running averages from zero, divided by how much was seen (`fill`):
         # unbiased from the first look.
-        cv2.accumulateWeighted(bgr.astype(np.float32), self._room, ROOM_LEARNING, mask=background)
-        cv2.accumulateWeighted(np.ones((h, w), dtype=np.float32), self._seen, ROOM_LEARNING, mask=background)
+        cv2.accumulateWeighted(small, self._room, ROOM_LEARNING, mask=learn)
+        cv2.accumulateWeighted(np.ones_like(self._seen), self._seen, ROOM_LEARNING, mask=learn)
 
     def fill(self, window: Window) -> tuple[np.ndarray, np.ndarray]:
-        """(room colours, how far each is trusted 0..1) over `window`."""
-        room, seen = self._room, self._seen
-        if room is None or seen is None or window.y1 > room.shape[0] or window.x1 > room.shape[1]:
-            return np.zeros((*window.shape, 3), dtype=np.float32), np.zeros(window.shape, dtype=np.float32)
-        seen = window.crop(seen)
-        colours = window.crop(room) / np.maximum(seen, 1e-6)[..., None]
+        """(remembered colours, how far each is trusted 0..1) over `window`,
+        a region of the camera frame."""
+        h, w = window.shape
+        if self._room is None or self._seen is None:
+            return np.zeros((h, w, 3), dtype=np.float32), np.zeros((h, w), dtype=np.float32)
+        # Memory pixel i's centre is at camera pixel (i + 0.5) / scale - 0.5.
+        to_window = np.float32([
+            [1.0 / ROOM_SCALE, 0.0, 0.5 / ROOM_SCALE - 0.5 - window.x0],
+            [0.0, 1.0 / ROOM_SCALE, 0.5 / ROOM_SCALE - 0.5 - window.y0],
+        ])
+        size = (w, h)
+        colours = cv2.warpAffine(self._room, to_window, size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        # Both read past the edge the same way, or the frame's outer pixels
+        # come back too bright (colour kept, how much it was seen halved).
+        seen = cv2.warpAffine(self._seen, to_window, size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        colours = colours / np.maximum(seen, 1e-6)[..., None]
         return colours, np.clip(seen / ROOM_KNOWN, 0.0, 1.0)
+
+
+def grain(image: np.ndarray, where: np.ndarray) -> float:
+    """How grainy `image` (float32) is where `where` is set: the spread of
+    its fine detail, in levels. Robust (from the median): a few sharp edges
+    in the picture are not grain."""
+    detail = image - cv2.GaussianBlur(image, (5, 5), 0)
+    picked = detail[where]
+    return 1.4826 * float(np.median(np.abs(picked))) if picked.size else 0.0
 
 
 def filled(image: np.ndarray, hole: np.ndarray) -> np.ndarray:

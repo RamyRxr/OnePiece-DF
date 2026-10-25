@@ -156,3 +156,19 @@ def test_the_settled_labels_are_what_everything_downstream_sees():
     hands = [make_hand(CHEEK_L, OPEN, "Right"), make_hand(EAR_R, OPEN, "Right")]
     result = pipeline.step(Frame(t_ms=0.0, face=make_face(), hands=hands), 30.0)
     assert sorted(h.handedness for h in result.frame.hands) == ["Left", "Right"]
+
+
+def test_pinching_the_palm_by_the_thumbs_root_does_not_grab_the_thumb():
+    """The thumb starts at its knuckle; between it and the wrist is palm."""
+    from ofp_vision.indices import HAND_DIGITS
+
+    hand = other_hand(TIP)
+    root, knuckle = (hand.landmarks[i] for i in HAND_DIGITS["thumb"][:2])
+    root_points = list(hand.landmarks)
+    root_points[HAND_DIGITS["thumb"][0]] = (root[0], root[1] + 0.1, 0.0)  # the root sits low, by the wrist
+    hand = type(hand)(handedness=hand.handedness, landmarks=root_points)
+    palm = (knuckle[0], knuckle[1] + 0.05)
+    session = Session()
+    session.step([make_hand(palm, OPEN, "Right"), hand])
+    states = session.step([make_hand(palm, PINCHED, "Right"), hand])
+    assert not states["Right"].active

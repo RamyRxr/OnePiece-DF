@@ -62,48 +62,68 @@ The stretch is **skin physics drawn on the graphics card** - the way games
 and AR filters do it:
 
 - when you pinch your face, a fine grid of ~4,000 points is laid over the
-  skin around the pinch, glued to your face. It moves, turns and scales with
-  your head **exactly** - head movement is never a pull on the skin, so the
-  face never lags behind like a mask. Each hand gets its own; two pinches
-  close together on the face hold the same grid;
+  skin around the pinch, and each point is **glued to your face's own
+  landmarks** - the 468 the tracker follows - as a fixed blend of the ones
+  around it (moving least squares). So every frame each point rests exactly
+  where its bit of skin is now: when your head moves, turns or comes closer,
+  your mouth opens, your cheek rises in a smile. Moving is never a pull on
+  the skin, and the face never lags or slides like a mask. Each hand gets its
+  own; two pinches close together on the face hold the same grid
+  ([`faceskin.py`](ofp_vision/faceskin.py));
 - a **finger is a rubber tube**, not a sheet: a chain of points along the
   finger from the knuckle to the tip. The knuckle end stays on the hand; from
   the pinch to the tip, the finger travels whole with your pinching fingers
-  (the nail stays a nail); in between it stretches nearly straight, like a
-  rubber band, and a little thinner (to 70% at most). Let go and it snaps
-  home. The tube is painted with the finger's own pixels, and follows your
-  palm - which the tracker holds well even while your other hand covers the
-  finger ([`fingers.py`](ofp_vision/fingers.py));
+  (the nail stays a nail), its end swinging round to follow the pull; in
+  between it stretches nearly straight, like a rubber band, and a little
+  thinner (to 85% at most). Let go and it snaps home. It follows your palm -
+  which the tracker holds well even while your other hand covers the finger.
+  A thumb stretches from its own knuckle, not from inside the palm
+  ([`fingers.py`](ofp_vision/fingers.py));
+- the finger's **outline is seen in the picture**, every frame: across the
+  finger, row by row, where its skin colour gives way to what is beside it
+  (in CIELAB, brightness counting for little - a round finger is darker at
+  its sides). So it is exactly as thick as your finger, a thumb thicker,
+  rounded at the tip, and solid - never see-through. Its edge pixels take
+  the finger's own colour, so its soft edge never brings a fringe of the
+  background along. In front of skin (your face), where no edge can be
+  seen, it takes the finger's usual width; and where the finger cannot be
+  found at all, nothing is drawn - never a finger-shaped piece of the wall;
+- the stretched finger is painted with **its own skin, unrolled into a
+  strip** and made longer: the colour and the round shading stretch
+  smoothly, but the fine grain of the skin is kept at its own size - walked
+  back and forth along the stretch - so a finger pulled to four times its
+  length still looks like skin, not a smeared noodle. A crease stretches
+  once, softly, in its place ([`strip.py`](ofp_vision/strip.py));
 - every point has mass, springs to its neighbours, and a soft tether to
   where it rests. Your fingers hold the pinched points - firmly at the
   centre of the pinch, gently at its rim - and the rest follows with a
   little **weight**. Let go and it **snaps back quickly and cleanly**, like a
   rubber band: back in 2 frames, still by the 3rd - no slime, no jiggle;
 - the eyes are pinned (they never move), the lips are separate (the springs
-  across the mouth opening are cut), and **only real skin moves**: a
-  segmentation model labels every pixel (face skin, body skin, hair,
-  clothes, background), so a face grab moves face skin (and a beard - hair
-  below the nose, attached to the skin) and a finger grab moves only that
-  finger's own pixels - within the finger's own width of its centre line,
-  so never its neighbours, the air beside it, the wall, scalp hair or
-  teeth. It runs in the background (~10 times a second) and does not slow
-  the frame rate. An ear hidden under hair has no skin showing, so it does
-  not stretch;
-- what is visible is decided **per pixel** on the graphics card: every drawn
-  pixel looks up where it came from in the skin mask and shows only if that
-  spot was skin. However far the mesh stretches, the wall beside a finger
-  or the room beside a face can never come along with it;
+  across the mouth opening are cut), and **only real skin moves**: on the
+  face, everything inside its outline (and a beard); beyond it - an ear, the
+  neck - what a segmentation model calls skin (it labels every pixel: face
+  skin, body skin, hair, clothes, background; it runs in the background,
+  ~10 times a second). Never scalp hair, the room or the teeth. An ear hidden
+  under hair has no skin showing, so it does not stretch;
+- what is visible is decided **per pixel**, from **this very frame**: every
+  drawn pixel looks up where it came from and shows only if that spot is
+  skin now. Nothing is kept from the moment of the pinch, so when you move -
+  or open your mouth mid-stretch - the stretch still fits you exactly;
 - **the real part leaves the picture**: where a finger (or an ear) was and no
   longer is, what is behind it shows - not a ghost of it next to its
-  stretched self. The webcam does not move, so the room behind you is
-  remembered, learned slowly from everything the segmentation calls
-  background (never near your hands). Where the room was never seen, the
-  spot is filled from the colours around it ([`room.py`](ofp_vision/room.py));
+  stretched self. The webcam does not move, so everything but your hands is
+  remembered, frame by frame - the room, your shirt, your face - and where a
+  finger is now, the picture from before it got there still is. Where
+  nothing was ever seen behind it, the spot is filled from the colours
+  around it, with the camera's own grain and a soft edge, so it never reads
+  as a flat cut-out ([`room.py`](ofp_vision/room.py));
 - the mesh is drawn on the GPU, painted with your own camera image and lit
   from its 3D shape (antialiased, ~11-22ms a frame at 720p).
 
-The pieces: [`skinmesh.py`](ofp_vision/skinmesh.py) (the face's grid and
-its springs), [`fingers.py`](ofp_vision/fingers.py) (the rubber finger),
+The pieces: [`skinmesh.py`](ofp_vision/skinmesh.py) (the grid and its
+springs), [`faceskin.py`](ofp_vision/faceskin.py) (the face's mesh, glued to
+its landmarks), [`fingers.py`](ofp_vision/fingers.py) (the rubber finger),
 [`softbody.py`](ofp_vision/softbody.py) (the physics - XPBD,
 compiled with numba), [`gpu.py`](ofp_vision/gpu.py) (drawing, moderngl),
 [`stretch.py`](ofp_vision/stretch.py) (ties them together), with what counts
@@ -451,12 +471,14 @@ ofp_vision/
   protocol.py    wire format
   lab.py         overlay window
   clips.py       recording clips of the real camera (key v), and playing them back
-  room.py        the room behind the player, remembered - what a pulled part leaves
+  room.py        the picture behind the hands, remembered - what a pulled part leaves
   light.py       the room's light, judged from the face (lights stretched skin)
   warp.py        the stretch effect: elastic-skin physics, lighting, rendering (cosmetic)
   skin.py        what counts as skin: face, ears, fingers, mouth, skin colour
-  skinmesh.py    the face's skin mesh: a grid glued to the face, and its springs
+  skinmesh.py    a skin mesh: a grid, its triangles and springs
+  faceskin.py    the face's mesh, glued to its landmarks; what of it shows, per frame
   fingers.py     the rubber finger: a chain along the finger, drawn as a tube
+  strip.py       a finger's skin unrolled into a strip, stretched without smearing
   softbody.py    skin physics: mass, springs, tethers (XPBD, numba)
   gpu.py         draws the skin mesh on the graphics card (moderngl)
   stretch.py     the skin-physics stretch effect: mesh + physics + GPU, per frame
@@ -490,7 +512,7 @@ skipping anything whose name contains "virtual", "obs", "snap" and friends.
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-213 tests, no camera required. They lock in the properties that matter:
+249 tests, no camera required. They lock in the properties that matter:
 scale invariance (multiply every landmark by 2 and nothing changes),
 responsiveness (move the cheekbone and the ear channel goes up),
 symmetry (a symmetric face gives exactly zero asymmetry), the calibration

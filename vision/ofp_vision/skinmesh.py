@@ -108,3 +108,5 @@ class Hold:
     target: str
     core: np.ndarray
     grip: np.ndarray
+    # The point right under the pinch, if it matters (a finger turns about it).
+    pivot: int | None = None

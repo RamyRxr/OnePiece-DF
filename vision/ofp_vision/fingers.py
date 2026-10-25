@@ -1,9 +1,9 @@
-"""A finger, stretched like rubber: a tube along the finger, with physics.
+"""A finger, stretched like rubber: a chain with physics, warping the picture.
 
-A finger is not a sheet. Pulled, it gets longer - a little thinner, still
-round - and the part past the pinch (the tip, the nail) goes whole with the
-fingers that hold it. So a finger is a chain of points along its centre
-line, from the knuckle to just past the tip:
+A finger is not a sheet. Pulled, it gets longer - a little thinner - and the
+part past the pinch (the tip, the nail) goes whole with the fingers that
+hold it. So a finger is a chain of points along its centre line, from the
+knuckle to just past the tip:
 
     knuckle end   pinned: the finger stays on the hand
     the pinch     the points from the pinch to the tip are held by the
@@ -13,11 +13,15 @@ line, from the knuckle to just past the tip:
                   to where it rests - so, held, it runs nearly straight from
                   knuckle to pinch, like a rubber band
 
-The tube drawn around the chain is painted with the finger's own pixels,
-taken straight across the finger where it rests: a stretched finger is that
-finger, drawn longer. Where it rests follows the palm - which the tracker
-holds well even when the other hand covers the finger - with the finger's
-own shape eased in slowly: its landmarks wobble while it is held.
+The finger on screen is the camera's own picture of it, warped (`warp`):
+nothing is erased and nothing new is drawn. The picture along the finger
+moves with the chain - the finger's own pixels whole, a thin skirt of what
+is around it less and less, so the stretch blends into the picture with no
+edge - and beyond the skirt nothing moves, never the next finger.
+
+Where the chain rests follows the palm - which the tracker holds well even
+when the other hand covers the finger - with the finger's own shape eased in
+slowly: its landmarks wobble while it is held.
 """
 
 from __future__ import annotations
@@ -27,22 +31,15 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from .indices import HAND_DIGITS, HAND_MIDDLE_MCP, HAND_WRIST
+from .indices import HAND_FINGER_JOINTS, HAND_MIDDLE_MCP, HAND_WRIST
 from .signals import HandObservation
-from .skin import FINGER_HALF_WIDTH, Window, body_skin, distance_to_chain
 from .skinmesh import Hold
 from .softbody import SoftBody
 
-# Points along the chain, and vertices across the tube (odd: one on the
-# centre line).
+# Points along the chain.
 NODES = 24
-ACROSS = 7
-ACROSS_OFFSETS = np.linspace(-1.0, 1.0, ACROSS)
 # The fingertip's flesh past its landmark, in palm lengths.
 TIP_EXTENSION = 0.1
-# The tube's half width, in palm lengths: wider than the finger - the
-# finger's own skin mask trims it to the finger's real outline.
-TUBE_HALF_WIDTH = 0.18
 # The first points of the chain, at the knuckle, never move.
 BASE_NODES = 2
 # Tethers on a held chain, as a share of the face's: a held finger runs nearly
@@ -50,14 +47,31 @@ BASE_NODES = 2
 # Let go, it is tethered fully again, and snaps home.
 CHAIN_TETHER = 0.15
 # A stretched finger thins (it keeps its volume), but never below this.
-MIN_THINNING = 0.7
+MIN_THINNING = 0.85
+# The width's change along the chain is eased this many times (each over
+# three points).
+THIN_EASE_PASSES = 4
 # How far each frame's measured finger shape moves the one used: slowly
 # while it is held (its landmarks wobble under the other hand), quickly not.
 EASE_HELD, EASE_FREE = 0.1, 0.5
 # The finger is held from this far below the pinch (palm lengths) to its tip.
 HOLD_BELOW = 0.08
+# How far the held end turns to follow the stretch (1: all the way).
+TURN_TO_PULL = 0.8
 # The palm: the wrist and the four knuckles (not the thumb, which moves).
 PALM_FRAME = (HAND_WRIST, 5, 9, 13, 17)
+# How far from its centre line (palm lengths) a finger's picture moves whole
+# with it - a thumb is the thickest - and how much further a thin skirt of
+# what is around it goes along, less and less: the stretch blends into the
+# picture there instead of having an edge.
+FINGER_HALF = {"thumb": 0.14, "index": 0.105, "middle": 0.105, "ring": 0.1, "pinky": 0.085}
+SKIRT = 0.1
+# Past the fingertip, the same blend, along the finger (palm lengths).
+TIP_SKIRT = 0.12
+# The warp's mesh: a row every this many pixels along the finger, this many
+# points across it (odd: one on the centre line).
+ROW_PX = 4.0
+WARP_COLS = 17
 
 
 def similarity(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
@@ -91,8 +105,8 @@ def _palm_length(hand: HandObservation, size: tuple[int, int]) -> float:
 
 
 def _finger_line(hand: HandObservation, digit: str, size: tuple[int, int]) -> np.ndarray:
-    """Knuckle, two joints, tip - and the flesh just past the tip."""
-    joints = _px(hand, HAND_DIGITS[digit], size)
+    """Knuckle, the joints, tip - and the flesh just past the tip."""
+    joints = _px(hand, HAND_FINGER_JOINTS[digit], size)
     last = joints[-1] - joints[-2]
     beyond = joints[-1] + last / max(float(np.linalg.norm(last)), 1e-6) * TIP_EXTENSION * _palm_length(hand, size)
     return np.vstack([joints, beyond])
@@ -106,26 +120,37 @@ def resample(line: np.ndarray, count: int) -> np.ndarray:
     return np.stack([np.interp(wanted, along, line[:, k]) for k in range(2)], axis=1)
 
 
-def _normals(points: np.ndarray) -> np.ndarray:
-    """Unit normals (left of the direction of travel) along a chain."""
+def arc(points: np.ndarray) -> np.ndarray:
+    """How far along a chain (by its x, y) each point is."""
+    return np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(points[:, :2], axis=0), axis=1))])
+
+
+def normals(points: np.ndarray) -> np.ndarray:
+    """Unit normals (left of the direction of travel) along a chain; zero
+    where the chain has no direction."""
     tangents = np.gradient(points, axis=0)
-    tangents /= np.maximum(np.linalg.norm(tangents, axis=1, keepdims=True), 1e-9)
+    tangents = tangents / np.maximum(np.linalg.norm(tangents, axis=1, keepdims=True), 1e-9)
     return np.stack([-tangents[:, 1], tangents[:, 0]], axis=1)
 
 
 def _thinning(points: np.ndarray, rest: np.ndarray) -> np.ndarray:
     """How thin each part of the chain is drawn: stretched by r, a finger
-    keeps its volume at width 1/sqrt(r)."""
+    keeps its volume at width 1/sqrt(r) - eased along the chain, so where the
+    stretch starts and ends its width changes smoothly, not in a notch."""
     span = np.linalg.norm(np.gradient(points, axis=0), axis=1)
     resting = np.maximum(np.linalg.norm(np.gradient(rest, axis=0), axis=1), 1e-9)
-    return np.clip(1.0 / np.sqrt(np.maximum(span / resting, 1e-9)), MIN_THINNING, 1.0)
+    thin = np.clip(1.0 / np.sqrt(np.maximum(span / resting, 1e-9)), MIN_THINNING, 1.0)
+    for _ in range(THIN_EASE_PASSES):
+        thin = np.convolve(np.pad(thin, 1, mode="edge"), [0.25, 0.5, 0.25], mode="valid")
+    return thin
 
 
-def tube_triangles(count: int, across: int) -> np.ndarray:
-    rows, cols = np.meshgrid(np.arange(count - 1), np.arange(across - 1), indexing="ij")
-    a = (rows * across + cols).ravel()
-    b, c, d = a + across, a + across + 1, a + 1
-    return np.concatenate([np.stack([a, b, c], axis=1), np.stack([a, c, d], axis=1)]).astype(np.int32)
+def grid_triangles(rows: int, cols: int) -> np.ndarray:
+    """Two triangles per cell of a rows x cols grid of points (row-major)."""
+    r, c = np.meshgrid(np.arange(rows - 1), np.arange(cols - 1), indexing="ij")
+    a = (r * cols + c).ravel()
+    b, d, e = a + cols, a + cols + 1, a + 1
+    return np.concatenate([np.stack([a, b, d], axis=1), np.stack([a, d, e], axis=1)]).astype(np.int32)
 
 
 def _chain_edges(count: int) -> np.ndarray:
@@ -134,7 +159,65 @@ def _chain_edges(count: int) -> np.ndarray:
     return np.array(stretch + bend, dtype=np.int64)
 
 
-TRIANGLES = tube_triangles(NODES, ACROSS)
+def _held_targets(rest: np.ndarray, hold: Hold, pull: np.ndarray) -> np.ndarray:
+    """Where a hand's held points go: with the pinch, and turned about the
+    point under it toward the stretch (TURN_TO_PULL of the way) - a rubber
+    finger's end swings round to follow the pull, rather than make an L."""
+    core = hold.core
+    pivot = rest[hold.pivot if hold.pivot is not None else core[0]]
+    before = pivot[:2] - rest[0, :2]
+    after = before + pull[:2]
+    angle = float(np.arctan2(before[0] * after[1] - before[1] * after[0], before @ after))
+    # Dragged straight back past the knuckle the turn has no side, and with
+    # the pinch at the knuckle no direction: fade it out there, so it never
+    # flips from one side to the other.
+    room = float(np.linalg.norm(after)) / max(float(np.linalg.norm(before)), 1e-6)
+    fade = min(1.0, 1.0 + np.cos(angle)) * min(1.0, room)
+    turn = TURN_TO_PULL * angle * fade
+    c, s = np.cos(turn), np.sin(turn)
+    offsets = rest[core, :2] - pivot[:2]
+    targets = rest[core] + pull
+    targets[:, :2] = pivot[:2] + pull[:2] + offsets @ np.array([[c, s], [-s, c]])
+    return targets
+
+
+def _extended(chain: np.ndarray, chain_arc: np.ndarray, s: np.ndarray) -> np.ndarray:
+    """A chain's points (x, y, ...) at distances `s` along it - straight on
+    past its end, the way its end points."""
+    inside = np.stack([np.interp(s, chain_arc, chain[:, k]) for k in range(chain.shape[1])], axis=1)
+    end = chain[-1, :2] - chain[-2, :2]
+    direction = end / max(float(np.linalg.norm(end)), 1e-9)
+    past = np.maximum(s - chain_arc[-1], 0.0)[:, None]
+    inside[:, :2] += past * direction
+    return inside
+
+
+def _smooth(t: np.ndarray) -> np.ndarray:
+    t = np.clip(t, 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _distance_to(points: np.ndarray, line: np.ndarray) -> np.ndarray:
+    """Each point's distance to a polyline."""
+    best = np.full(len(points), np.inf)
+    for a, b in zip(line[:-1], line[1:]):
+        ab = b - a
+        t = np.clip(((points - a) @ ab) / max(float(ab @ ab), 1e-9), 0.0, 1.0)
+        best = np.minimum(best, np.linalg.norm(points - (a + t[:, None] * ab), axis=1))
+    return best
+
+
+@dataclass(frozen=True, eq=False)
+class FingerWarp:
+    """The picture around a finger, as a mesh of `rows` x `cols` points:
+    where each point is drawn now (x, y, lift), and where its pixel is in
+    the camera's picture."""
+
+    positions: np.ndarray
+    source: np.ndarray
+    triangles: np.ndarray
+    rows: int
+    cols: int
 
 
 def finger_usable(hand: HandObservation, part: str, size: tuple[int, int]) -> bool:
@@ -144,7 +227,7 @@ def finger_usable(hand: HandObservation, part: str, size: tuple[int, int]) -> bo
     return _palm_length(hand, size) >= 1.0 and float(np.linalg.norm(line[-1] - line[0])) >= 1.0
 
 
-@dataclass
+@dataclass(eq=False)
 class FingerSession:
     """One finger's chain and physics, from the first pinch on it until it
     has settled. The hand pinching it has a `Hold` (the chain's held points)."""
@@ -183,7 +266,7 @@ class FingerSession:
         carry the chain along with it. Returns where the chain rests now."""
         before = self.rest()
         matrix = similarity(self.palm_start, _px(hand, PALM_FRAME, size)) if hand is not None else None
-        if matrix is not None and abs(float(np.linalg.det(matrix[:, :2]))) > 1e-6:
+        if hand is not None and matrix is not None and abs(float(np.linalg.det(matrix[:, :2]))) > 1e-6:
             self.to_image = matrix
             measured = apply(_inverse(self.to_image), _finger_line(hand, self.digit, size))
             ease = EASE_HELD if self.holds else EASE_FREE
@@ -204,75 +287,58 @@ class FingerSession:
         core = np.array([i for i in range(first, NODES) if i not in taken], dtype=np.int64)
         if len(core) == 0:
             return None
-        return Hold(target, core, np.ones(len(core)))
+        return Hold(target, core, np.ones(len(core)), pivot=max(place, int(core[0])))
 
     def step(self, rest: np.ndarray, pulls: dict[str, np.ndarray]) -> None:
-        """One frame of physics; each holding hand's points go to where they
-        rest plus that hand's pull (pixels, and lift)."""
+        """One frame of physics; each holding hand's points go with its pull
+        (pixels, and lift), turned to follow the stretch (`_held_targets`)."""
         holds = [(hand, hold) for hand, hold in self.holds.items() if hand in pulls]
         self.body.tether = CHAIN_TETHER if holds else 1.0
         if not holds:
             self.body.step(rest, np.zeros(0, dtype=np.int64), np.zeros((0, 3)))
             return
         grabbed = np.concatenate([hold.core for _, hold in holds])
-        targets = np.concatenate([rest[hold.core] + pulls[hand] for hand, hold in holds])
+        targets = np.concatenate([_held_targets(rest, hold, pulls[hand]) for hand, hold in holds])
         self.body.step(rest, grabbed, targets, np.concatenate([hold.grip for _, hold in holds]))
 
-    def tube(self, rest: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """(drawn vertices (V, 3), where each one's skin rests (V, 2)): the
-        tube around the chain now, and the same tube around it at rest."""
-        width = TUBE_HALF_WIDTH * self.palm_px
-        offsets = width * ACROSS_OFFSETS[None, :, None]
-        source = rest[:, None, :2] + offsets * _normals(rest[:, :2])[:, None, :]
+    def warp(self, rest: np.ndarray, hand: HandObservation | None, size: tuple[int, int]) -> FingerWarp | None:
+        """The picture along the finger as a mesh: each point where its pixel
+        is at rest, moved with the chain now - fully across the finger, less
+        and less across a thin skirt beside it and past its tip, not at all
+        beyond (nor near the next finger, or at the knuckle)."""
         points = self.body.positions
-        thin = _thinning(points[:, :2], rest[:, :2])[:, None, None]
-        drawn = points[:, None, :2] + thin * offsets * _normals(points[:, :2])[:, None, :]
-        lift = np.repeat(points[:, 2], ACROSS)[:, None]
-        return np.hstack([drawn.reshape(-1, 2), lift]), source.reshape(-1, 2)
-
-    def skin(
-        self,
-        rest: np.ndarray,
-        labels: np.ndarray | None,
-        size: tuple[int, int],
-        window: Window,
-        hand: HandObservation | None = None,
-        moving_only: bool = False,
-    ) -> np.ndarray:
-        """The finger's own skin over `window` (uint8): its outline, knuckle
-        to fingertip, at rest; cut to the body skin the segmentation sees,
-        and - given its `hand` - to what is nearer this finger than any
-        other. `moving_only` leaves out the knuckle end, which never moves."""
-        joints = apply(self.to_image, self.shape[:-1])
-        line = np.vstack([rest[BASE_NODES, :2], joints[1:]]) if moving_only else joints
-        outline = _outline(line, self.palm_px, window)
+        rest_arc = arc(rest)
+        if rest_arc[-1] < 1.0:
+            return None
+        half = FINGER_HALF[self.digit] * self.palm_px
+        reach = half + SKIRT * self.palm_px
+        tip = TIP_SKIRT * self.palm_px
+        s = np.arange(0.0, rest_arc[-1] + tip + ROW_PX, ROW_PX)
+        across = np.linspace(-reach, reach, WARP_COLS)
+        still, now = _extended(rest, rest_arc, s), _extended(points, rest_arc, s)
+        thin = np.interp(s, rest_arc, _thinning(points[:, :2], rest[:, :2]))
+        source = still[:, None, :2] + across[None, :, None] * normals(still[:, :2])[:, None, :]
+        moved = now[:, None, :2] + (thin[:, None] * across[None, :])[..., None] * normals(now[:, :2])[:, None, :]
+        knuckle = np.clip(s / max(rest_arc[BASE_NODES], 1e-6), 0.0, 1.0)
+        along = _smooth((rest_arc[-1] + tip - s) / tip) * knuckle
+        weight = along[:, None] * _smooth((reach - np.abs(across)) / (reach - half))[None, :]
         if hand is not None:
-            others = [_px(hand, HAND_DIGITS[d], size) for d in HAND_DIGITS if d != self.digit]
-            outline = _own_side(outline, joints, others, window)
-        if labels is not None:
-            outline = np.minimum(outline, body_skin(labels, size, window))
-        return outline
+            weight = weight * ~self._nearer_another_finger(source.reshape(-1, 2), hand, size).reshape(weight.shape)
+        xy = source + weight[..., None] * (moved - source)
+        lift = (weight * now[:, None, 2]).reshape(-1, 1)
+        rows, cols = len(s), WARP_COLS
+        return FingerWarp(np.hstack([xy.reshape(-1, 2), lift]), source.reshape(-1, 2), grid_triangles(rows, cols), rows, cols)
 
+    def _nearer_another_finger(self, points: np.ndarray, hand: HandObservation, size: tuple[int, int]) -> np.ndarray:
+        """Which points are nearer another finger of the hand than this one:
+        where fingers touch, those pixels are the next finger's, and stay."""
+        own = _distance_to(points, apply(self.to_image, self.shape[:-1]))
+        others = [_px(hand, HAND_FINGER_JOINTS[d], size) for d in HAND_FINGER_JOINTS if d != self.digit]
+        return np.min([_distance_to(points, line) for line in others], axis=0) < own
 
-def _outline(line: np.ndarray, palm_px: float, window: Window) -> np.ndarray:
-    """A finger's outline around its centre line, over `window` (uint8)."""
-    outline = np.zeros(window.shape, dtype=np.uint8)
-    points = np.round(line - [window.x0, window.y0]).astype(np.int32)
-    thickness = max(3, int(round(2 * FINGER_HALF_WIDTH * palm_px)))
-    cv2.polylines(outline, [points], False, 255, thickness, lineType=cv2.LINE_8)
-    for end in (points[0], points[-1]):
-        cv2.circle(outline, (int(end[0]), int(end[1])), thickness // 2, 255, -1)
-    return outline
-
-
-def _own_side(outline: np.ndarray, own: np.ndarray, others: list[np.ndarray], window: Window) -> np.ndarray:
-    """`outline`, cut to the pixels nearer to this finger than to the others."""
-    rows, cols = np.nonzero(outline)
-    if len(rows) == 0 or not others:
-        return outline
-    points = np.stack([cols + window.x0 + 0.5, rows + window.y0 + 0.5], axis=1).astype(np.float64)
-    mine = distance_to_chain(points, own)
-    theirs = np.min([distance_to_chain(points, other) for other in others], axis=0)
-    cut = outline.copy()
-    cut[rows[theirs < mine], cols[theirs < mine]] = 0
-    return cut
+    def mark_resting(self, mask: np.ndarray, scale: float) -> None:
+        """Mark where the finger rests on `mask` (a frame `scale` times the
+        camera's): what is being stretched is never learned as background."""
+        line = np.round(self.rest()[:, :2] * scale).astype(np.int32)
+        reach = (FINGER_HALF[self.digit] + SKIRT) * self.palm_px
+        cv2.polylines(mask, [line], False, 255, max(1, int(round(2 * reach * scale))))

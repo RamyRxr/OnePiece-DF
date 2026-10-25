@@ -1,11 +1,17 @@
-"""Tests for the rubber finger: a tube along the finger, with physics.
+"""Tests for the rubber finger: a chain with physics, warping the picture.
 
-- at rest it is the finger, exactly: drawn where its own skin is
-- pulled from a pinch, the part past the pinch travels whole, the knuckle
-  end stays on the hand, and the part in between gets longer - a little
-  thinner, never a noodle
-- let go, it snaps back and settles
-- moving the hand carries it along, with no lag
+The physics:
+- pulled from a pinch, the part past the pinch travels whole (turning to
+  follow the pull), the knuckle end stays on the hand, and the part in
+  between gets longer - a little thinner, gradually
+- let go, it snaps back and settles; moving the hand carries it, no lag
+
+The picture:
+- the finger is the camera's own picture, warped - nothing is erased and
+  nothing new is drawn: at rest the warp changes nothing
+- the finger's pixels move whole with it; a thin skirt of what is around it
+  goes along less and less, so the stretch blends into the picture; beyond
+  the skirt, nothing moves - and never the next finger
 """
 
 from __future__ import annotations
@@ -14,10 +20,17 @@ import math
 
 import numpy as np
 
-from ofp_vision.fingers import BASE_NODES, MIN_THINNING, FingerSession, apply, similarity
+from ofp_vision.fingers import (
+    BASE_NODES,
+    FINGER_HALF,
+    SKIRT,
+    FingerSession,
+    _thinning,
+    apply,
+    similarity,
+)
 from ofp_vision.indices import HAND_DIGITS, HAND_MIDDLE_MCP, HAND_WRIST
 from ofp_vision.signals import HandObservation
-from ofp_vision.skin import SEGMENT_BODY_SKIN, Window
 
 W, H = 1280, 720
 SIZE = (W, H)
@@ -50,16 +63,21 @@ def run(session: FingerSession, observed: HandObservation, pulls: dict, frames: 
     return rest
 
 
-def pulled(by=(150.0, -40.0), frames: int = 30):
-    observed = hand()
-    session = FingerSession.start(PART, observed, SIZE)
-    hold = session.hold(PART, tip_px(observed))
+def pulled(by=(150.0, -40.0), frames: int = 30, part: str = PART, observed: HandObservation | None = None):
+    observed = observed or hand()
+    session = FingerSession.start(part, observed, SIZE)
+    joints = HAND_DIGITS[part.split(".")[2]]
+    tip = observed.landmarks[joints[3]]
+    hold = session.hold(part, np.array([tip[0] * W, tip[1] * H]))
     session.holds = {"Right": hold}
     rest = None
     for f in range(1, frames + 1):
         k = min(1.0, f / 8)
         rest = run(session, observed, {"Right": np.array([by[0] * k, by[1] * k, 0.0])}, 1)
     return session, hold, rest, observed
+
+
+# --- the physics -------------------------------------------------------------
 
 
 def test_the_palm_fit_recovers_a_turn_a_scale_and_a_shift():
@@ -69,38 +87,34 @@ def test_the_palm_fit_recovers_a_turn_a_scale_and_a_shift():
     assert np.allclose(apply(similarity(src, dst), src), dst)
 
 
-def test_at_rest_the_tube_is_the_finger_exactly():
-    observed = hand()
-    session = FingerSession.start(PART, observed, SIZE)
-    rest = run(session, observed, {}, 3)
-    drawn, source = session.tube(rest)
-    assert np.abs(drawn[:, :2] - source).max() < 1e-6, "drawn exactly where its skin is"
-    nearest = np.linalg.norm(rest[:, :2] - tip_px(observed), axis=1).min()
-    assert nearest < 4.0, "along the index finger, up to its tip"
-
-
 def test_pulled_from_its_tip_the_finger_gets_longer_and_stays_a_finger():
     session, hold, rest, _ = pulled()
     p = session.body.positions
-    assert np.abs(p[hold.core, :2] - (rest[hold.core, :2] + [150.0, -40.0])).max() < 0.5, "the tip goes whole"
+    held, resting = p[hold.core, :2], rest[hold.core, :2]
+    under = hold.pivot
+    assert np.abs(p[under, :2] - (rest[under, :2] + [150.0, -40.0])).max() < 0.5, "the pinched point goes with the pinch"
+    spacing = np.linalg.norm(np.diff(held, axis=0), axis=1)
+    assert np.allclose(spacing, np.linalg.norm(np.diff(resting, axis=0), axis=1), atol=0.5), "the tip with it, whole"
     assert np.abs(p[:BASE_NODES] - rest[:BASE_NODES]).max() < 1e-6, "the knuckle end stays on the hand"
     length = np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1).sum()
-    resting = np.linalg.norm(np.diff(rest[:, :2], axis=0), axis=1).sum()
-    assert length > 1.4 * resting, "it got longer"
-    drawn, source = session.tube(rest)
-    across = drawn.reshape(len(p), -1, 3)[:, [0, -1], :2]
-    width = np.linalg.norm(across[:, 1] - across[:, 0], axis=1)
-    resting_width = np.linalg.norm(source.reshape(len(p), -1, 2)[:, -1] - source.reshape(len(p), -1, 2)[:, 0], axis=1)
-    ratio = width / resting_width
-    assert ratio.min() >= MIN_THINNING - 1e-6, "never a noodle"
-    assert ratio.min() < 0.95, "but a stretched finger is a little thinner"
+    resting_length = np.linalg.norm(np.diff(rest[:, :2], axis=0), axis=1).sum()
+    assert length > 1.4 * resting_length, "it got longer"
+
+
+def test_a_stretched_finger_thins_gradually_not_in_a_step():
+    """Where the stretched part meets the knuckle and the held end, its width
+    changes smoothly - a sudden notch reads as a seam."""
+    session, _, rest, _ = pulled()
+    thin = _thinning(session.body.positions[:, :2], rest[:, :2])
+    assert thin.min() < 0.95, "a stretched finger is a little thinner"
+    assert np.abs(np.diff(thin)).max() < 0.06
 
 
 def test_let_go_the_finger_snaps_back_and_settles():
     session, _, _, observed = pulled()
     session.holds = {}
     rest = None
-    for frame in range(15):
+    for _ in range(15):
         rest = run(session, observed, {}, 1)
         if session.body.settled(rest):
             break
@@ -123,34 +137,118 @@ def test_a_hand_shrunk_to_a_point_is_ignored_not_an_error():
     assert np.allclose(rest, before), "the finger stays where it was"
 
 
-def skin_of(observed: HandObservation) -> np.ndarray:
-    """The index finger's skin over the whole frame, the segmentation calling
-    everything around the hand body skin (it blurs over the gaps)."""
-    labels = np.zeros((H // 2, W // 2), dtype=np.uint8)
-    labels[100:340, 200:500] = SEGMENT_BODY_SKIN
-    session = FingerSession.start(PART, observed, SIZE)
-    rest = run(session, observed, {}, 1)
-    return session.skin(rest, labels, SIZE, Window(0, 0, W, H), hand=observed)
+def angle_between(a: np.ndarray, b: np.ndarray) -> float:
+    return abs(math.degrees(math.atan2(a[0] * b[1] - a[1] * b[0], a @ b)))
 
 
-def at(mask: np.ndarray, x: float, y: float) -> int:
-    return int(mask[int(y * H), int(x * W)])
-
-
-def test_the_finger_skin_is_its_own_not_its_neighbours():
-    """Fingers together: the skin between them belongs to the nearer one, so
-    the tube never takes a sliver of the next finger along."""
-    observed = hand(spread=0.02)
-    index = observed.landmarks[HAND_DIGITS["index"][2]]
-    mask = skin_of(observed)
-    assert at(mask, index[0], index[1]) > 200, "the finger itself"
-    assert at(mask, index[0] + 0.006, index[1]) > 200, "its own side of the gap"
-    assert at(mask, index[0] + 0.014, index[1]) == 0, "the middle finger's side"
-
-
-def test_the_finger_skin_ends_with_the_fingertip():
+def test_pulled_sideways_from_halfway_the_held_end_turns_toward_the_pull():
+    """A rubber finger's end swings round to follow the stretch - not an L
+    with the tip still pointing where it did."""
     observed = hand()
-    tip = observed.landmarks[HAND_DIGITS["index"][3]]
-    mask = skin_of(observed)
-    assert at(mask, tip[0], tip[1]) > 200
-    assert at(mask, tip[0], tip[1] - 0.03) == 0, "not the air beyond the tip"
+    session = FingerSession.start(PART, observed, SIZE)
+    hold = session.hold(PART, tip_px(observed) + [0.0, 0.1 * H])
+    session.holds = {"Right": hold}
+    rest = None
+    for f in range(1, 31):
+        rest = run(session, observed, {"Right": np.array([200.0, 0.0, 0.0]) * min(1.0, f / 8)}, 1)
+    p = session.body.positions[:, :2]
+    held = p[-1] - p[hold.core[0]]
+    stretch = p[hold.core[0]] - p[0]
+    resting = rest[-1, :2] - rest[hold.core[0], :2]
+    assert angle_between(held, stretch) < 0.5 * angle_between(resting, stretch)
+
+
+def first_frame_of_a_pull(pull: np.ndarray) -> np.ndarray:
+    observed = hand()
+    session = FingerSession.start(PART, observed, SIZE)
+    session.holds = {"Right": session.hold(PART, tip_px(observed) + [0.0, 0.1 * H])}
+    run(session, observed, {"Right": pull}, 1)
+    return session.body.positions[session.holds["Right"].core, :2].copy()
+
+
+def test_dragged_back_past_the_knuckle_the_end_does_not_flip():
+    """Straight back over the knuckle the turn has no side; a hair's width
+    either way must not swing the held end from one side to the other. (The
+    free part between may buckle either way - that is just physics.)"""
+    down = np.array([0.0, 2.5 * 0.21 * H, 0.0])
+    left = first_frame_of_a_pull(down + [-0.01, 0.0, 0.0])
+    right = first_frame_of_a_pull(down + [0.01, 0.0, 0.0])
+    assert np.abs(left - right).max() < 1.0
+
+
+def test_the_pinched_spot_stays_with_the_pinch_as_the_end_turns():
+    observed = hand()
+    session = FingerSession.start(PART, observed, SIZE)
+    anchor = tip_px(observed) + [0.0, 0.1 * H]
+    session.holds = {"Right": session.hold(PART, anchor)}
+    rest = None
+    for f in range(1, 31):
+        rest = run(session, observed, {"Right": np.array([200.0, 0.0, 0.0]) * min(1.0, f / 8)}, 1)
+    place = int(np.argmin(np.linalg.norm(rest[:, :2] - anchor, axis=1)))
+    assert np.abs(session.body.positions[place, :2] - (rest[place, :2] + [200.0, 0.0])).max() < 0.5
+
+
+def test_a_thumb_stretches_from_its_knuckle_not_from_inside_the_palm():
+    """The tracker's first thumb point is by the wrist, inside the palm. A
+    stretched thumb leaves the hand at its knuckle, the next one."""
+    observed = hand()
+    session = FingerSession.start("finger.Left.thumb", observed, SIZE)
+    knuckle = observed.landmarks[HAND_DIGITS["thumb"][1]]
+    assert np.abs(session.rest()[0, :2] - [knuckle[0] * W, knuckle[1] * H]).max() < 1e-6
+
+
+# --- the picture -------------------------------------------------------------
+
+
+def moved(warp) -> np.ndarray:
+    """How far each point of the warp has moved from where its pixel is."""
+    return np.linalg.norm(warp.positions[:, :2] - warp.source, axis=1)
+
+
+def test_at_rest_the_warp_changes_nothing():
+    """The finger is the camera's own picture: until it is pulled, exactly so."""
+    observed = hand()
+    session = FingerSession.start(PART, observed, SIZE)
+    rest = run(session, observed, {}, 3)
+    warp = session.warp(rest, observed, SIZE)
+    assert moved(warp).max() < 1e-6
+
+
+def test_the_finger_moves_whole_and_the_picture_around_it_barely():
+    session, hold, rest, observed = pulled()
+    warp = session.warp(rest, observed, SIZE)
+    grid = moved(warp).reshape(warp.rows, warp.cols)
+    middle = warp.cols // 2
+    assert grid[-1 - warp.cols // 4 :, middle].max() > 100.0, "down the finger's middle, it went with the pull"
+    assert grid[:, 0].max() < 1e-6 and grid[:, -1].max() < 1e-6, "the skirt's edge never moves"
+    assert grid[0].max() < 1e-6, "nor the knuckle"
+
+
+def test_the_stretch_blends_into_the_picture_across_its_skirt():
+    """From the finger's edge out, the picture goes along less and less - no
+    step where the moving part meets the still one."""
+    session, _, rest, observed = pulled()
+    warp = session.warp(rest, observed, SIZE)
+    row = moved(warp).reshape(warp.rows, warp.cols)[warp.rows // 2]
+    outward = row[warp.cols // 2 :]
+    assert np.all(np.diff(outward) <= 1e-6), "less and less"
+    assert np.abs(np.diff(outward)).max() < 0.5 * outward[0], "never all at once"
+
+
+def test_a_thumb_moves_wider_than_a_little_finger():
+    """A thumb is thicker: more of the picture around its middle goes with it."""
+    assert FINGER_HALF["thumb"] > FINGER_HALF["index"] > FINGER_HALF["pinky"]
+    assert SKIRT < FINGER_HALF["index"] * 1.5, "the skirt is thin: the picture around barely moves"
+
+
+def test_the_next_finger_is_never_dragged_along():
+    """Fingers together: pulling the index toward the middle finger, the
+    middle finger's pixels stay where they are."""
+    together = hand(spread=0.02)
+    session, _, rest, _ = pulled(by=(80.0, 0.0), observed=together)
+    warp = session.warp(rest, together, SIZE)
+    middle = [together.landmarks[i] for i in HAND_DIGITS["middle"]]
+    line = np.array([[p[0] * W, p[1] * H] for p in middle])
+    near_middle = np.min([np.linalg.norm(warp.source - point, axis=1) for point in line], axis=0) < 6.0
+    assert near_middle.any()
+    assert moved(warp)[near_middle].max() < 1e-6

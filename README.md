@@ -40,7 +40,7 @@ The webcam feed never leaves the player's machine. Only derived numbers do.
   room never move (~11-22ms/frame at 720p). CPU fallback without a GPU
 - Websocket protocol v3 + Unity reference client (not yet compiled — no
   Unity project exists)
-- 189 tests, no camera needed
+- 249 tests, no camera needed
 - Synthetic mode, including a synthetic pinch-grab, to verify the whole
   chain without a camera
 

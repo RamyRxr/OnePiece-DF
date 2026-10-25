@@ -58,6 +58,7 @@ from .indices import (
     FACE_NOSE_TIP,
     HAND_DIGIT_ORDER,
     HAND_DIGITS,
+    HAND_FINGER_JOINTS,
     HAND_MIDDLE_MCP,
     HAND_WRIST,
 )
@@ -164,7 +165,7 @@ def finger_owner(target: str) -> str | None:
 class Target:
     """A grabbable point this frame, the length its stretch is measured in,
     and how close (in that length) a pinch must be to grab it. For a finger,
-    `place` is where along it: 0 at the knuckle, 3 at the tip."""
+    `place` is where along it: 0 at the knuckle, one more per joint, to the tip."""
 
     name: str
     point: Point2
@@ -296,18 +297,19 @@ class GrabDetector:
         return targets
 
     def _at_place(self, hand: HandObservation, digit: str, place: float) -> Point2:
-        """The point `place` along a finger: 0 knuckle .. 3 tip."""
-        joints = HAND_DIGITS[digit]
-        segment = min(int(place), 2)
+        """The point `place` along a finger: 0 at the knuckle, 1 a joint
+        further, and so on to the tip."""
+        joints = HAND_FINGER_JOINTS[digit]
+        segment = min(int(place), len(joints) - 2)
         t = place - segment
         a, b = hand.landmarks[joints[segment]], hand.landmarks[joints[segment + 1]]
         return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
 
     def _nearest_place(self, hand: HandObservation, digit: str, near: Point2) -> float:
-        """Where along a finger (0..3) is nearest to `near`."""
-        joints = HAND_DIGITS[digit]
+        """Where along a finger (0 at the knuckle) is nearest to `near`."""
+        joints = HAND_FINGER_JOINTS[digit]
         best, best_place = math.inf, 0.0
-        for segment in range(3):
+        for segment in range(len(joints) - 1):
             a, b = hand.landmarks[joints[segment]], hand.landmarks[joints[segment + 1]]
             ax, ay = a[0] * self.aspect, a[1]
             bx, by = b[0] * self.aspect, b[1]

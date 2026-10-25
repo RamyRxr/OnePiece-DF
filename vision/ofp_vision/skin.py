@@ -308,11 +308,6 @@ def _labels_as(segmentation: np.ndarray, wanted, size: tuple[int, int], window: 
     return (np.clip(scaled, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
 
 
-def body_skin(segmentation: np.ndarray, size: tuple[int, int], window: Window) -> np.ndarray:
-    """Where the segmentation sees body skin (hands, arms), over `window`."""
-    return _labels_as(segmentation, (SEGMENT_BODY_SKIN,), size, window)
-
-
 def segmented_face_masks(
     segmentation: np.ndarray, face: list[Point], size: tuple[int, int], window: Window
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -344,16 +339,6 @@ def segmented_face_masks(
     cv2.fillPoly(mouth, [_local([face[i] for i in FACE_INNER_LIPS], size, window)], 255)
     skin[mouth > 0] = 0
     return skin, mouth
-
-
-def distance_to_chain(points: np.ndarray, joints: np.ndarray) -> np.ndarray:
-    """Distance from each (N, 2) point to a chain of segments (a finger)."""
-    best = np.full(len(points), np.inf)
-    for a, b in zip(joints[:-1], joints[1:]):
-        ab = b - a
-        t = np.clip(((points - a) @ ab) / max(float(ab @ ab), 1e-9), 0.0, 1.0)
-        best = np.minimum(best, np.linalg.norm(points - (a + t[:, None] * ab), axis=1))
-    return best
 
 
 def digit_mask(hand: HandObservation, digit: str, size: tuple[int, int], window: Window) -> np.ndarray:

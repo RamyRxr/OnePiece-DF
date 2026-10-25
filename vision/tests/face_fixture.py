@@ -68,7 +68,7 @@ def px(point) -> tuple[int, int]:
     return int(point[0] * W), int(point[1] * H)
 
 
-def landmarks(scale: float = 1.0, centre=CENTRE) -> list[tuple[float, float, float]]:
+def landmarks(scale: float = 1.0, centre=CENTRE, mouth=MOUTH_HALF) -> list[tuple[float, float, float]]:
     def at(dx: float, dy: float) -> tuple[float, float, float]:
         return norm(dx, dy, scale, centre)
 
@@ -84,7 +84,7 @@ def landmarks(scale: float = 1.0, centre=CENTRE) -> list[tuple[float, float, flo
         points[index] = at(cx + offset[0], cy + offset[1])
     for i, index in enumerate(FACE_INNER_LIPS):
         angle = 2 * math.pi * i / len(FACE_INNER_LIPS)
-        points[index] = at(MOUTH[0] - MOUTH_HALF[0] * math.cos(angle), MOUTH[1] - MOUTH_HALF[1] * math.sin(angle))
+        points[index] = at(MOUTH[0] - mouth[0] * math.cos(angle), MOUTH[1] - mouth[1] * math.sin(angle))
     layout = {
         FACE_EYE_OUTER_R: (EYE_R[0] - 0.02, EYE_R[1]),
         FACE_EYE_OUTER_L: (EYE_L[0] + 0.02, EYE_L[1]),
@@ -110,13 +110,13 @@ def landmarks(scale: float = 1.0, centre=CENTRE) -> list[tuple[float, float, flo
     return points
 
 
-def image(scale: float = 1.0, centre=CENTRE) -> np.ndarray:
+def image(scale: float = 1.0, centre=CENTRE, mouth=MOUTH_HALF) -> np.ndarray:
     ys, xs = np.mgrid[0:H, 0:W]
     frame = np.zeros((H, W, 3), dtype=np.uint8)
     frame[..., 0] = 60 + (xs % 180)
     frame[..., 1] = 60 + (ys % 180)
     frame[..., 2] = 50
-    face = landmarks(scale, centre)
+    face = landmarks(scale, centre, mouth)
     middle = px(norm(0.0, 0.0, scale, centre))
     radius = int(RADIUS * scale * H)
     texture = np.random.default_rng(7).integers(-14, 15, (H, W, 1))
