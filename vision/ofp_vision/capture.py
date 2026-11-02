@@ -11,6 +11,10 @@ Two rules learned the hard way on this machine:
    device numbering has not matched DirectShow's on this box, so we enumerate
    names through DirectShow (pygrabber) and then open that index with the
    DSHOW backend.
+
+3. **A network camera is just a URL.** When `CaptureConfig.source_url` is
+   set, both rules above are skipped: a phone app's MJPEG/RTSP stream needs
+   no driver and cannot be a stale virtual camera.
 """
 
 from __future__ import annotations
@@ -85,6 +89,9 @@ class CameraSource:
     def open(self) -> bool:
         import cv2
 
+        if self.config.source_url:
+            return self._open_url(cv2)
+
         target = self.resolve_device()
         if target is None:
             log.error(
@@ -104,8 +111,64 @@ class CameraSource:
 
         self.cap = cap
         self.opened = target
+        self._log_mode(cap, requested=(self.config.width, self.config.height))
         log.info("Camera opened: index=%d name=%r", target.index, target.name)
         return True
+
+    def _open_url(self, cv2) -> bool:
+        """Open a network camera: a phone app's MJPEG/RTSP URL.
+
+        This is the route that needs no driver and no virtual camera, so the
+        phone and the PC only have to be able to reach each other on the
+        local network. A URL that opens in the PC's browser will open here.
+        """
+        url = self.config.source_url
+        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+        if not cap.isOpened():
+            log.error(
+                "Could not open camera URL %s. Open that URL in the PC's "
+                "browser first: if the browser cannot play the video, the "
+                "problem is the network (firewall, guest-Wi-Fi client "
+                "isolation, or phone and PC on different networks), not this "
+                "code.",
+                url,
+            )
+            return False
+        # Keep only the newest frame. A network stream buffers, and a backlog
+        # of a second or two turns into lag: the release detector watches
+        # pull *velocity*, so a late frame reads as a slower hand.
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:  # not every backend exposes this
+            pass
+        self.cap = cap
+        self.opened = OpenedCamera(index=-1, name=url, backend="FFMPEG")
+        self._log_mode(cap)
+        log.info("Camera opened: url=%r", url)
+        return True
+
+    @staticmethod
+    def _log_mode(cap, requested: tuple[int, int] | None = None) -> None:
+        """Log the mode the source actually delivers, not the one requested.
+
+        A driver (or a phone app) may silently ignore the request and hand
+        back a smaller frame. The lab then upscales it to fill the window and
+        it is easy to blame the sensor for a resolution nobody is capturing.
+        """
+        import cv2
+
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+        log.info("Camera mode: %dx%d @ %.0f fps", width, height, fps)
+        if requested and width and height and (width, height) != requested:
+            log.warning(
+                "Camera negotiated %dx%d, not the requested %dx%d - the driver "
+                "or app is resizing. Pick the resolution in the source itself.",
+                width,
+                height,
+                *requested,
+            )
 
     def read(self):
         """Return (ok, bgr_frame)."""

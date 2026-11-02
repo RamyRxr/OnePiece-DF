@@ -13,11 +13,13 @@ knuckle to just past the tip:
                   to where it rests - so, held, it runs nearly straight from
                   knuckle to pinch, like a rubber band
 
-The finger on screen is the camera's own picture of it, warped (`warp`):
-nothing is erased and nothing new is drawn. The picture along the finger
-moves with the chain - the finger's own pixels whole, a thin skirt of what
-is around it less and less, so the stretch blends into the picture with no
-edge - and beyond the skirt nothing moves, never the next finger.
+The finger on screen is painted through that chain (`warp`), but drawn the
+way the face is (`stretch.py`): only the finger's own skin - the
+segmentation's body-skin labels cut it at the real outline, so the room and
+the next finger can never come along - lit as a tube rather than a flat
+sheet, and with whatever it leaves behind filled in from the room. The
+finger's pixels move whole; a thin skirt beside it follows less and less, so
+the stretch still blends into the picture.
 
 Where the chain rests follows the palm - which the tracker holds well even
 when the other hand covers the finger - with the finger's own shape eased in
@@ -33,6 +35,7 @@ import numpy as np
 
 from .indices import HAND_FINGER_JOINTS, HAND_MIDDLE_MCP, HAND_WRIST
 from .signals import HandObservation
+from .skin import Window
 from .skinmesh import Hold
 from .softbody import SoftBody
 
@@ -72,6 +75,12 @@ TIP_SKIRT = 0.12
 # points across it (odd: one on the centre line).
 ROW_PX = 4.0
 WARP_COLS = 17
+# A finger is a tube, not a sheet. Across it, the picture is lifted toward
+# the camera by this share of the finger's half-width (a half-cylinder at 1),
+# so the light falls off toward its edges and a stretched finger reads round
+# instead of like a sticker. Faded out with the stretch, so undisturbed skin
+# is still the camera's own, pixel for pixel.
+TUBE_ROUND = 0.9
 
 
 def similarity(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
@@ -325,9 +334,27 @@ class FingerSession:
         if hand is not None:
             weight = weight * ~self._nearer_another_finger(source.reshape(-1, 2), hand, size).reshape(weight.shape)
         xy = source + weight[..., None] * (moved - source)
-        lift = (weight * now[:, None, 2]).reshape(-1, 1)
+        # Round the tube: high on its centre line, down to nothing at its
+        # edges. Only once the finger has moved off its own picture, so
+        # undisturbed skin stays the camera's own, pixel for pixel.
+        across_share = np.clip(across / max(half, 1e-6), -1.0, 1.0)
+        bulge = np.sqrt(np.maximum(0.0, 1.0 - across_share**2)) * half * TUBE_ROUND
+        travel = np.linalg.norm(now[:, :2] - still[:, :2], axis=1)
+        rounding = _smooth(np.clip(np.maximum(travel, now[:, 2]) / max(0.5 * half, 1e-6), 0.0, 1.0))
+        lift = (weight * (now[:, None, 2] + rounding[:, None] * bulge[None, :])).reshape(-1, 1)
         rows, cols = len(s), WARP_COLS
-        return FingerWarp(np.hstack([xy.reshape(-1, 2), lift]), source.reshape(-1, 2), grid_triangles(rows, cols), rows, cols)
+        return FingerWarp(
+            np.hstack([xy.reshape(-1, 2), lift]), source.reshape(-1, 2), grid_triangles(rows, cols), rows, cols
+        )
+
+    def leaves(self, warp: FingerWarp, window: Window, visible: np.ndarray) -> np.ndarray:
+        """The finger's visible skin that a stretch can leave behind: only
+        inside the strip the mesh was laid over, so the fill never eats into
+        the palm or the room beside it."""
+        inside = np.zeros(window.shape, dtype=np.uint8)
+        points = np.round(warp.source - [window.x0, window.y0]).astype(np.int32)
+        cv2.fillConvexPoly(inside, cv2.convexHull(points), 1)
+        return visible * inside.astype(np.float32)
 
     def _nearer_another_finger(self, points: np.ndarray, hand: HandObservation, size: tuple[int, int]) -> np.ndarray:
         """Which points are nearer another finger of the hand than this one:

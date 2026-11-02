@@ -32,6 +32,7 @@ from .baseline import load_baseline, save_baseline
 from .capture import CameraSource
 from .clips import ClipSwitch, frame_payload
 from .config import Config
+from .fire import Fire
 from .lab import PANEL_HEIGHT, LabOverlay, fit_video
 from .landmarks import Tracker
 from .pipeline import Pipeline, StepResult
@@ -145,6 +146,12 @@ class FrameRecorder:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ofp-vision", description="Stretch perception service")
     parser.add_argument("--device", type=str, default=None, help="camera name substring")
+    parser.add_argument(
+        "--url",
+        type=str,
+        default=None,
+        help="network camera URL instead of a local device, e.g. http://192.168.1.42:8080/video",
+    )
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--no-window", action="store_true", help="headless, no lab overlay")
@@ -170,6 +177,8 @@ def build_config(args: argparse.Namespace) -> Config:
     config = Config()
     if args.device:
         config.capture.device_name = args.device
+    if args.url:
+        config.capture.source_url = args.url
     config.server.host = args.host
     config.server.port = args.port
     config.server.show_lab_window = not args.no_window
@@ -321,25 +330,41 @@ class Lab:
     warper: FaceWarper
     overlay: LabOverlay | None = None
     effect_failures: int = 0
+    # The Ace fire, drawn over the camera image (see fire.py).
+    fire: Fire | None = None
     # Hide the landmarks and grab drawings (key h), to judge the effect.
     clean: bool = False
     # The REC line while a clip is being recorded (key v).
     recording: str | None = None
 
+    def __post_init__(self) -> None:
+        self.fire = Fire(self.config.fire)
+
     def _stretched(self, bgr: np.ndarray, frame: Frame, result: StepResult) -> np.ndarray:
         """The camera image with the stretch drawn in - or, if the effect
         fails, the plain image: it is cosmetic, and must never stop the
         tracking and streaming."""
+        out = bgr
         try:
             self.warper.update(result.grabs, frame, (bgr.shape[1], bgr.shape[0]))
-            return self.warper.warp(bgr)
+            out = self.warper.warp(bgr)
         except Exception:
             self.effect_failures += 1
             if self.effect_failures == 1:
                 log.exception("Stretch effect failed; showing the plain image")
             else:
                 log.debug("Stretch effect failed again (%d times)", self.effect_failures)
-            return bgr
+        if self.fire is not None:
+            try:
+                self.fire.update(frame, (bgr.shape[1], bgr.shape[0]))
+                out = self.fire.draw(out)
+            except Exception:
+                self.effect_failures += 1
+                if self.effect_failures == 1:
+                    log.exception("Fire effect failed; showing the plain image")
+                else:
+                    log.debug("Fire effect failed again (%d times)", self.effect_failures)
+        return out
 
     def _open_window(self, frame_size: tuple[int, int]) -> LabOverlay:
         """Size the window to the screen, once the frame size is known."""
@@ -375,9 +400,9 @@ class Lab:
             f"{opened.name if opened else 'synthetic'}   fps {fps:4.1f}   infer {infer_ms:3.0f}ms",
             f"face {'yes' if frame.face else 'NO'}   hands {len(frame.hands)}   "
             f"baseline {'CAPTURING' if pipeline.calibrating else 'READY'}",
-            "PINCH a ring (ear, nose, jaw, cheek, mouth)",
-            "or a finger of your other hand - one hand,",
-            "or both at once. PULL, then OPEN to fire",
+            "PINCH a ring (ear, nose, jaw, cheek) or a finger, PULL, OPEN",
+            "SNAP thumb+middle: fire on/off   fist: bigger   index up: ball",
+            self.fire.status_line() if self.fire is not None else "fire: off",
             self.recording or "c calibrate  r reset  h clean  v record  q quit",
         ]
         if self.overlay is None:

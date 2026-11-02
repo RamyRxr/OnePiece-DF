@@ -16,12 +16,15 @@ from ofp_vision.indices import FACE_INNER_LIPS, HAND_DIGITS, HAND_MIDDLE_MCP, HA
 from ofp_vision.signals import HandObservation
 from ofp_vision.skin import (
     CAVITY_MAX_LUMA,
+    SEGMENT_BACKGROUND,
+    SEGMENT_BODY_SKIN,
     Window,
     cavity_colour,
     colour_distance,
     colour_match,
     digit_mask,
     face_masks,
+    finger_visible,
     skin_colour,
 )
 
@@ -139,6 +142,66 @@ def test_a_finger_mask_covers_that_finger_and_not_its_neighbours():
     pinky_tip = points[HAND_DIGITS["pinky"][3]]
     assert at(mask, index_tip) == 255
     assert at(mask, pinky_tip) == 0
+
+
+def finger_scene() -> tuple[HandObservation, np.ndarray]:
+    """A hand whose index finger is painted skin-coloured on the blue room."""
+    hand = HandObservation(handedness="Left", landmarks=_finger_hand())
+    img = np.empty((H, W, 3), np.uint8)
+    img[:] = (200, 120, 40)  # the room: blue, nothing like skin
+    fingers = np.zeros((H, W), np.uint8)
+    for digit in ("thumb", "index", "middle", "ring", "pinky"):
+        fingers |= digit_mask(hand, digit, (W, H), FULL)
+    img[fingers > 0] = SKIN
+    return hand, img
+
+
+def _finger_hand() -> list[tuple[float, float, float]]:
+    x, y = 0.5, 0.6
+    points = [(x, y, 0.0)] * 21
+    points[HAND_WRIST] = (x, y + 0.2, 0.0)
+    points[HAND_MIDDLE_MCP] = (x, y + 0.1, 0.0)
+    for offset, digit in enumerate(("thumb", "index", "middle", "ring", "pinky")):
+        fx = x + (offset - 2) * 0.03
+        for j, joint in enumerate(HAND_DIGITS[digit]):
+            points[joint] = (fx, y + 0.1 - 0.03 * j, 0.0)
+    return points
+
+
+def test_a_fingers_own_skin_is_what_is_drawn():
+    """Pulled, a finger is drawn from its own skin only: never a piece of the
+    room beside it, whatever the pull does to the picture."""
+    hand, img = finger_scene()
+    labels = np.full((H, W), SEGMENT_BACKGROUND, np.uint8)
+    labels[digit_mask(hand, "index", (W, H), FULL) > 0] = SEGMENT_BODY_SKIN
+    visible = finger_visible(hand, "index", labels, img, (W, H), FULL)
+    tip = px(hand.landmarks[HAND_DIGITS["index"][3]])
+    assert visible[tip[1], tip[0]] > 0.9, "the finger itself"
+    assert visible[tip[1] - 45, tip[0]] < 0.05, "the room past its tip"
+
+
+def test_without_the_segmentation_a_fingers_own_colour_finds_it():
+    """The model can be off, or lose a thin finger: its colour at the middle
+    joints is the fallback - and the room beside it still stays out."""
+    hand, img = finger_scene()
+    visible = finger_visible(hand, "index", None, img, (W, H), FULL)
+    tip = px(hand.landmarks[HAND_DIGITS["index"][3]])
+    assert visible[tip[1], tip[0]] > 0.9
+    assert visible[tip[1] - 45, tip[0]] < 0.05
+
+
+def test_a_finger_the_model_lost_is_not_cut_off_at_its_label():
+    """The segmenter can lose a thin finger while still labelling the palm
+    under its knuckle: a sliver of labels must not be taken for the finger
+    and cut the rest of it away."""
+    hand, img = finger_scene()
+    labels = np.full((H, W), SEGMENT_BACKGROUND, np.uint8)
+    knuckle = digit_mask(hand, "index", (W, H), FULL)
+    knuckle[: int(0.685 * H)] = 0  # only the last bit, over the palm
+    labels[knuckle > 0] = SEGMENT_BODY_SKIN
+    visible = finger_visible(hand, "index", labels, img, (W, H), FULL)
+    tip = px(hand.landmarks[HAND_DIGITS["index"][3]])
+    assert visible[tip[1], tip[0]] > 0.9, "the finger, found by its own colour"
 
 
 

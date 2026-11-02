@@ -1,11 +1,11 @@
 """Quick liveness probe: how many faces / hands / poses are in the camera right now.
 
-Run:  python -m ofp_vision.tools.probe [frames]
+Run:  python -m ofp_vision.tools.probe [frames] [--url URL]
 """
 
 from __future__ import annotations
 
-import sys
+import argparse
 import time
 
 from ..capture import CameraSource
@@ -14,8 +14,20 @@ from ..landmarks import Tracker
 
 
 def main() -> int:
-    frames = int(sys.argv[1]) if len(sys.argv) > 1 else 60
-    cam = CameraSource(CaptureConfig())
+    parser = argparse.ArgumentParser(prog="probe", description="face/hand/pose liveness probe")
+    parser.add_argument("frames", nargs="?", type=int, default=60)
+    parser.add_argument("--url", type=str, default=None, help="network camera URL instead of a local device")
+    parser.add_argument("--device", type=str, default=None, help="local camera name substring")
+    args = parser.parse_args()
+    frames = args.frames
+
+    config = CaptureConfig()
+    if args.device:
+        config.device_name = args.device
+    if args.url:
+        config.source_url = args.url
+
+    cam = CameraSource(config)
     if not cam.open():
         print("CAMERA FAILED TO OPEN")
         return 1

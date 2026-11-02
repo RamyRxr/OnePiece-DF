@@ -45,9 +45,10 @@ from .grab import GrabState, finger_owner
 from .light import default_light, followed_light
 from .room import ROOM_SCALE, RoomMemory, filled, grain
 from .signals import Frame, HandObservation, Point
-from .skin import FEATHER_PX, Window, feathered, hand_mask
+from .skin import FEATHER_PX, Window, feathered, finger_visible, hand_mask
 from .skinmesh import Hold, build_patch
 from .softbody import SoftBody
+from .vfx import Sparks
 
 # Pulled skin comes off the face toward the camera, this much per pixel of
 # pull (until the real depth of the hand is measured).
@@ -65,8 +66,6 @@ FILL_CONTEXT = 32
 # The camera's grain for filled spots, cut from a tile of it: fresh noise
 # for a whole spot each frame costs more than the rest of the fill.
 GRAIN_TILE = np.random.default_rng(0).standard_normal((256, 256)).astype(np.float32)
-# A skin texture of one pixel, all skin: a warp shows every pixel it moves.
-OPAQUE = np.ones((1, 1), dtype=np.float32)
 
 Stretch = FaceSession | FingerSession
 
@@ -110,12 +109,17 @@ class SkinStretcher:
         self._light = default_light()
         self._room = RoomMemory()
         self._rng = np.random.default_rng()
+        self._sparks = Sparks()
+        # Hands whose release has already been fired this frame: `warp` may be
+        # called more than once, and one let-go is one burst.
+        self._sparked: set[str] = set()
         _warm_up()
 
     def update(self, grabs: Mapping[str, GrabState], frame: Frame, size: tuple[int, int]) -> None:
         """Take this frame's grabs (one per hand) and landmarks. `size` is
         (width, height)."""
         self._grabs = dict(grabs)
+        self._sparked = set()
         self._size = size
         if frame.face is not None:
             self._face = frame.face
@@ -129,11 +133,12 @@ class SkinStretcher:
         """Return a copy of `bgr` with the stretches drawn (or `bgr` if none)."""
         self._learn_room(bgr)
         self._follow_grabs()
+        self._spark_releases()
         if not self._sessions:
             # Follow the room's light between pinches (a pinching hand over
             # the cheek would read as a shadow).
             self._light = followed_light(self._light, bgr, self._face)
-            return bgr
+            return self._sparks.draw(bgr)
         out, alive = bgr, []
         # The face first, then fingers: a finger pulled over the face is in front.
         for session in sorted(self._sessions, key=lambda s: s.part != FACE_PART):
@@ -142,7 +147,21 @@ class SkinStretcher:
                 alive.append(session)
                 out = self._draw(out, session, rest)
         self._sessions = alive
-        return out
+        return self._sparks.draw(out)
+
+    def _spark_releases(self) -> None:
+        """A burst where each pinch let go this frame, at the fingertip (or
+        cheek) the stretch was pulled to."""
+        for hand, grab in self._grabs.items():
+            if hand in self._sparked or not grab.just_released or grab.anchor is None:
+                continue
+            self._sparked.add(hand)
+            x, y = self._px(grab.anchor)
+            self._sparks.release(
+                x + grab.pull[0] * self._size[0],
+                y + grab.pull[1] * self._size[1],
+                grab.release_peak,
+            )
 
     def _learn_room(self, bgr: np.ndarray) -> None:
         """Remember the picture behind the hands: all of it but the hands -
@@ -252,23 +271,32 @@ class SkinStretcher:
         return Layer(box, colour, cover, session.leaves(self._face, self._size, box, visible))
 
     def _finger_layer(self, bgr: np.ndarray, session: FingerSession, rest: np.ndarray) -> Layer | None:
-        """The picture along the finger, warped with it: the finger's own
-        pixels stretch, and a thin skirt around it blends the stretch into
-        the picture. Nothing is erased; nothing new is drawn."""
-        warp = session.warp(rest, self._hand(session.owner), self._size)
+        """The finger's mesh, painted with the finger as the camera sees it
+        now: only its own skin (never the room it is in front of), lit round
+        like a tube rather than flat, and with what it leaves behind filled in
+        the way the face's is."""
+        seen = self._hand(session.owner)
+        warp = session.warp(rest, seen, self._size)
         if warp is None:
             return None
-        box = _window_around(np.vstack([warp.positions[:, :2], warp.source]), self._size, 2)
+        hand = seen or self._recent.get(session.owner, (None, 0))[0]
+        if hand is None:
+            return None
+        box = _window_around(np.vstack([warp.positions[:, :2], warp.source]), self._size, FEATHER_PX + 2)
         if box.empty:
             return None
+        visible = finger_visible(hand, session.digit, self._segmentation, bgr, self._size, box)
+        # All of the mesh is drawn; the GPU discards whatever did not come
+        # from the finger's own skin, pixel by pixel.
         order = np.argsort(warp.positions[warp.triangles, 2].mean(axis=1), kind="stable")
-        flat = np.tile((0.0, 0.0, 1.0), (len(warp.positions), 1))
+        normals = vertex_normals(warp.positions, warp.triangles)
         uv = warp.source / np.array(self._size, dtype=np.float64)
-        self._renderer.set_skin(OPAQUE)
+        skin_uv = (warp.source - [box.x0, box.y0]) / [box.shape[1], box.shape[0]]
+        self._renderer.set_skin(visible)
         colour, cover = self._renderer.draw(
-            bgr, warp.positions, uv, np.full_like(uv, 0.5), flat, warp.triangles[order], self._light, box
+            bgr, warp.positions, uv, skin_uv, normals, warp.triangles[order], self._light, box
         )
-        return Layer(box, colour, cover, np.zeros(box.shape, dtype=np.float32))
+        return Layer(box, colour, cover, session.leaves(warp, box, visible))
 
     def _composite(self, bgr: np.ndarray, layer: Layer, owner: str | None) -> np.ndarray:
         """The stretch over the frame: what it left behind filled in, and

@@ -252,3 +252,41 @@ def test_the_next_finger_is_never_dragged_along():
     near_middle = np.min([np.linalg.norm(warp.source - point, axis=1) for point in line], axis=0) < 6.0
     assert near_middle.any()
     assert moved(warp)[near_middle].max() < 1e-6
+
+
+def test_at_rest_the_finger_is_flat_so_its_light_never_changes():
+    """Undisturbed, the finger is the camera's own pixels: no lift, no
+    shading of its own."""
+    observed = hand()
+    session = FingerSession.start(PART, observed, SIZE)
+    rest = run(session, observed, {}, 3)
+    warp = session.warp(rest, observed, SIZE)
+    assert np.abs(warp.positions[:, 2]).max() < 1e-9
+
+
+def test_a_stretched_finger_rounds_towards_its_edges():
+    """A finger is a tube: pulled, its skin lifts across into a half-cylinder,
+    high on the centre line and down at the edges, so the light falls off
+    toward the silhouette - not a flat sticker."""
+    session, _, rest, observed = pulled()
+    warp = session.warp(rest, observed, SIZE)
+    lift = warp.positions[:, 2].reshape(warp.rows, warp.cols)
+    row = lift[warp.rows // 2]
+    middle = warp.cols // 2
+    assert lift[:, middle].max() > 1.0, "it comes off the picture"
+    assert row[middle] > row[0] + 1.0 and row[middle] > row[-1] + 1.0, "high on the centre line"
+    assert np.all(np.diff(row[: middle + 1]) >= -1e-6), "rising to the middle"
+    assert np.all(np.diff(row[middle:]) <= 1e-6), "and falling from it"
+
+
+def test_the_fill_claims_only_the_finger_not_the_palm():
+    """What is left behind is filled only inside the strip the mesh covered:
+    the palm beside it and the room around it are not eaten into."""
+    from ofp_vision.stretch import _window_around
+
+    session, _, rest, observed = pulled()
+    warp = session.warp(rest, observed, SIZE)
+    box = _window_around(np.vstack([warp.positions[:, :2], warp.source]), SIZE, 9)
+    was = session.leaves(warp, box, np.ones(box.shape, dtype=np.float32))
+    assert was.max() > 0.9
+    assert was[0, 0] == 0.0 and was[-1, -1] == 0.0

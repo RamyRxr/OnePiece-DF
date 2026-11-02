@@ -56,7 +56,10 @@ All of these are in `GrabConfig` in [`config.py`](ofp_vision/config.py).
 
 In the lab, every face target is drawn as an orange ring; the fingers are
 drawn as the hand's skeleton. Press **h** for a clean view without the
-landmarks and grab drawings, to judge the stretch as it really looks.
+landmarks and grab drawings, to judge the stretch as it really looks. Let go
+of a pull and a burst of sparks goes off where the stretch was: the lab's own
+effect, so a release reads as an event - the game draws its own
+([`vfx.py`](ofp_vision/vfx.py)).
 
 The stretch is **skin physics drawn on the graphics card** - the way games
 and AR filters do it:
@@ -79,21 +82,17 @@ and AR filters do it:
   which the tracker holds well even while your other hand covers the finger.
   A thumb stretches from its own knuckle, not from inside the palm
   ([`fingers.py`](ofp_vision/fingers.py));
-- the finger's **outline is seen in the picture**, every frame: across the
-  finger, row by row, where its skin colour gives way to what is beside it
-  (in CIELAB, brightness counting for little - a round finger is darker at
-  its sides). So it is exactly as thick as your finger, a thumb thicker,
-  rounded at the tip, and solid - never see-through. Its edge pixels take
-  the finger's own colour, so its soft edge never brings a fringe of the
-  background along. In front of skin (your face), where no edge can be
-  seen, it takes the finger's usual width; and where the finger cannot be
-  found at all, nothing is drawn - never a finger-shaped piece of the wall;
-- the stretched finger is painted with **its own skin, unrolled into a
-  strip** and made longer: the colour and the round shading stretch
-  smoothly, but the fine grain of the skin is kept at its own size - walked
-  back and forth along the stretch - so a finger pulled to four times its
-  length still looks like skin, not a smeared noodle. A crease stretches
-  once, softly, in its place ([`strip.py`](ofp_vision/strip.py));
+- the finger's **outline is its own skin**, seen in the picture every frame:
+  the segmentation model's body-skin labels cut it at the real edge, and where
+  the model has nothing to say about a thin finger (it runs at a lower
+  resolution), the finger's own colour at its joints is the fallback. So the
+  room beside it, the palm it lies on and the next finger never come along;
+- the stretched finger is **painted with its own skin and lit as a tube**: the
+  picture moves with the chain and, once it starts to move, is lifted across
+  the finger into a half-cylinder, so the light falls off toward its
+  silhouette and it reads round rather than like a flat sticker. The pixels
+  themselves do stretch - fine grain smears a little on a long pull; keeping
+  it at its real size (an unrolled strip) is still to come;
 - every point has mass, springs to its neighbours, and a soft tether to
   where it rests. Your fingers hold the pinched points - firmly at the
   centre of the pinch, gently at its rim - and the rest follows with a
@@ -238,6 +237,39 @@ pull. If the bars sit away from the centre line at rest, press `r`.
 # pipeline/protocol check with no camera at all
 .venv\Scripts\python.exe -m ofp_vision.server --synthetic
 ```
+
+### Using a phone as the camera
+
+The phone and the PC only have to reach each other on the **local
+network** - the same router is enough, and no internet connection is
+needed. Phone on Wi-Fi and PC on Ethernet to the same router works; guest
+Wi-Fi (which often blocks device-to-device traffic) and a phone on mobile
+data do not. If in doubt, turn on the phone's hotspot and connect the PC
+to it.
+
+Any app that serves an MJPEG/RTSP URL will do. On Android, **IP Webcam**:
+start the server, note the address it shows, and confirm the video plays in
+the PC's browser. Then pass the stream URL:
+
+```powershell
+.venv\Scripts\python.exe -m ofp_vision.tools.probe_camera --url http://192.168.1.42:8080/video
+.venv\Scripts\python.exe -m ofp_vision.server --url http://192.168.1.42:8080/video
+```
+
+The probe answers, before MediaPipe is in the way, whether the stream is
+live (not a frozen virtual camera), bright enough and sharp enough, and
+saves one still to look at. `--url` bypasses DirectShow entirely: no device
+name, no virtual-camera driver, no frozen frame.
+
+- Point the **back** camera at yourself (better sensor, real autofocus),
+  prop the phone, and use the lab window as the mirror. Turn mirroring off
+  in the app if it has the setting - the pipeline mirrors for display only.
+- In the app: 720p, MJPEG, the smallest buffer it offers, and 5GHz if the
+  router has it. MJPEG at 720p30 is roughly 10-20 Mbit/s.
+- DroidCam's Wi-Fi URL is `http://<phone-ip>:4747/video`.
+- Wi-Fi adds jitter, and the release detector reads pull *velocity*: a
+  delayed frame reads as a slower hand. USB tethering is the fallback if
+  releases fire early or the hand drops out.
 
 ### Reading the bars
 
@@ -478,7 +510,7 @@ ofp_vision/
   skinmesh.py    a skin mesh: a grid, its triangles and springs
   faceskin.py    the face's mesh, glued to its landmarks; what of it shows, per frame
   fingers.py     the rubber finger: a chain along the finger, drawn as a tube
-  strip.py       a finger's skin unrolled into a strip, stretched without smearing
+  vfx.py         the lab's release burst: sparks where a pinch lets go
   softbody.py    skin physics: mass, springs, tethers (XPBD, numba)
   gpu.py         draws the skin mesh on the graphics card (moderngl)
   stretch.py     the skin-physics stretch effect: mesh + physics + GPU, per frame

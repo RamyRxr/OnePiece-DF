@@ -221,6 +221,18 @@ def test_the_release_frame_still_names_what_was_let_go():
     assert after.just_released is False
 
 
+def test_the_release_frame_keeps_where_the_stretch_was_let_go():
+    """`anchor + pull` is the pinch point on the release frame, so an effect
+    can fire from where the stretch snapped back - not from nowhere."""
+    session = Session()
+    session.grab()
+    held = session.hold((CHEEK_L[0] + 0.1, CHEEK_L[1]))
+    released = session.step([make_hand((CHEEK_L[0] + 0.1, CHEEK_L[1]), OPEN)])
+    assert released.anchor == held.anchor
+    assert released.pull == held.pull
+    assert released.anchor is not None
+
+
 def test_a_wobbly_pinch_does_not_drop_the_grab():
     """Between pinch_on and pinch_off the pinch holds (hysteresis)."""
     config = GrabConfig()

@@ -283,6 +283,31 @@ def hand_mask(hands: list[HandObservation], size: tuple[int, int], window: Windo
     return mask
 
 
+def hand_silhouette(
+    hand: HandObservation,
+    segmentation: np.ndarray | None,
+    size: tuple[int, int],
+    window: Window,
+) -> np.ndarray:
+    """One hand's real outline over `window`, feathered, 0..1.
+
+    For the fire effect, which covers the hand rather than stretching its
+    pixels: the segmentation's body-skin labels give the actual fingers and
+    wrist, clipped to this hand so the other hand or the face cannot leak in.
+    Where the model has lost the hand (thin fingers at webcam resolution, or
+    no segmentation model at all), the landmark glove is the outline.
+    """
+    stroke = hand_mask([hand], size, window)
+    if segmentation is not None:
+        near = cv2.dilate(stroke, np.ones((9, 9), np.uint8))
+        skin = np.minimum(_labels_as(segmentation, (SEGMENT_BODY_SKIN,), size, window), near)
+        # Enough of the glove has to be labelled skin, or the model has lost
+        # the hand and its labels would cut the fire off at the wrist.
+        if np.count_nonzero(skin > 127) >= 0.35 * max(1, np.count_nonzero(stroke)):
+            return feathered(skin)
+    return feathered(stroke)
+
+
 # --- masks from the segmentation model ----------------------------------------
 
 # The segmentation model's labels.
@@ -351,3 +376,66 @@ def digit_mask(hand: HandObservation, digit: str, size: tuple[int, int], window:
         cv2.line(mask, _pt(a), _pt(b), 255, width)
     cv2.circle(mask, _pt(joints[-1]), width // 2, 255, -1)
     return mask
+
+
+# Where a feathered mask becomes fully visible (share): the same edge the
+# face is cut at, so a finger and a cheek have the same soft outline.
+FINGER_VISIBLE_FROM, FINGER_VISIBLE_TO = 0.75, 0.98
+
+
+def finger_visible(
+    hand: HandObservation,
+    digit: str,
+    segmentation: np.ndarray | None,
+    bgr: np.ndarray,
+    size: tuple[int, int],
+    window: Window,
+) -> np.ndarray:
+    """What of a finger is drawn, over `window`, as it is now (0..1): its own
+    skin, knuckle to tip - and never the room, the palm or the next finger.
+
+    The segmentation's body-skin labels give the real outline. Where they have
+    nothing to say about this finger (the model runs at a lower resolution and
+    can lose a thin one over the face), the finger's own colour at its middle
+    joints is the fallback.
+    """
+    region = cv2.dilate(digit_mask(hand, digit, size, window), np.ones((5, 5), np.uint8))
+    if segmentation is not None:
+        skin = np.minimum(_labels_as(segmentation, (SEGMENT_BODY_SKIN,), size, window), region)
+        # Most of the stroke has to be labelled skin, not just its knuckle
+        # (which lies on the palm, body skin too): otherwise the model has
+        # lost this finger, and drawing its labels would cut the finger off.
+        if np.count_nonzero(skin > 127) >= 0.5 * max(1, np.count_nonzero(region)):
+            return _finger_ramp(skin)
+    model = _finger_colour(bgr, hand, digit, size)
+    if model is None:
+        return _finger_ramp(region)
+    match = colour_match(colour_distance(window.crop(bgr), model))
+    skin = (region.astype(np.float32) / 255.0 * match * 255.0 + 0.5).astype(np.uint8)
+    return _finger_ramp(skin)
+
+
+def _finger_ramp(mask: np.ndarray) -> np.ndarray:
+    ramp = np.clip((feathered(mask) - FINGER_VISIBLE_FROM) / (FINGER_VISIBLE_TO - FINGER_VISIBLE_FROM), 0.0, 1.0)
+    return (ramp * ramp * (3.0 - 2.0 * ramp)).astype(np.float32)
+
+
+def _finger_colour(
+    bgr: np.ndarray, hand: HandObservation, digit: str, size: tuple[int, int]
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Mean and inverse covariance of a finger's own colour, in (Y, Cr, Cb),
+    sampled at its middle joints. None if both are off-frame."""
+    lm = hand.landmarks
+    radius = max(2, int(0.3 * FINGER_HALF_WIDTH * _length_px(lm[HAND_WRIST], lm[HAND_MIDDLE_MCP], size)))
+    samples = []
+    for index in HAND_DIGITS[digit][1:3]:
+        patch = patch_around(bgr, *_to_px(lm[index], size), radius)
+        if patch.size:
+            samples.append(cv2.cvtColor(patch, cv2.COLOR_BGR2YCrCb).reshape(-1, 3))
+    if not samples or sum(len(s) for s in samples) < 3:
+        return None
+    data = np.concatenate(samples).astype(np.float64)
+    covariance = np.cov(data.T)
+    covariance[0, 0] = covariance[0, 0] * BRIGHTNESS_LOOSENESS + 100.0
+    covariance += np.diag([0.0, 4.0, 4.0])
+    return data.mean(axis=0), np.linalg.inv(covariance)

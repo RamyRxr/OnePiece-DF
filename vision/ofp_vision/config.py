@@ -60,6 +60,11 @@ class CaptureConfig:
     width: int = 1280
     height: int = 720
     fps: int = 30
+    # A network camera - a phone app's MJPEG/RTSP stream, e.g.
+    # "http://192.168.1.42:8080/video". When set, it is opened by URL through
+    # FFmpeg and the device name/index machinery above is skipped entirely:
+    # no DirectShow, no virtual-camera driver, no frozen-frame trap.
+    source_url: str | None = None
     # Used only if the name match fails.
     fallback_indices: tuple[int, ...] = (0, 1, 2)
     # Flip the preview horizontally so it behaves like a mirror.
@@ -166,6 +171,42 @@ class GrabConfig:
 
 
 @dataclass
+class FireConfig:
+    """The Ace fire effect: the signs that drive it (`gestures.py`) and its
+    animation (`fire.py`).
+
+    Sign thresholds are in palm lengths and joint straightness (1 = straight).
+    The `out_*` pair has to be exceeded for a finger to count as out; the
+    looser `in_*` pair is what keeps it out. The snap is a pinch that closes
+    below `snap_gap` and opens above `snap_open` within `snap_window_ms`.
+    """
+
+    out_reach: float = 0.55
+    out_straight: float = 0.75
+    in_reach: float = 0.40
+    in_straight: float = 0.42
+    snap_gap: float = 0.34
+    snap_open: float = 0.55
+    snap_window_ms: float = 260.0
+    snap_cooldown_ms: float = 350.0
+
+    # Envelope timings, seconds: lighting up, going out, the fist swell, the
+    # flame ball appearing / closing away, and the ignition flash.
+    ignite_s: float = 0.22
+    extinguish_s: float = 0.45
+    fist_s: float = 0.35
+    orb_s: float = 0.24
+    flash_s: float = 0.28
+    # How far above the hand the fire may rise and its fireball may float,
+    # in palm lengths; and the fireball's radius.
+    plume: float = 1.0
+    orb_lift: float = 0.95
+    orb_radius: float = 0.55
+    # Flame particles per second at full level (a fist roughly triples it).
+    spawn_rate: float = 150.0
+
+
+@dataclass
 class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 8765
@@ -182,6 +223,7 @@ class Config:
     filters: FilterConfig = field(default_factory=FilterConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     grab: GrabConfig = field(default_factory=GrabConfig)
+    fire: FireConfig = field(default_factory=FireConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     models_dir: Path = MODELS_DIR
     baseline_path: Path = VISION_DIR / "baseline.json"

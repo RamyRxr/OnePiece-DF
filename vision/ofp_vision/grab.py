@@ -457,10 +457,14 @@ class GrabDetector:
 
     @staticmethod
     def _release(state: GrabState) -> GrabState:
-        """End the grab and fire. Keeps the target for the release frame."""
+        """End the grab and fire. Keeps the target for the release frame, and
+        where the stretch was let go - `anchor + pull` is the point in the
+        picture that snapped back (an effect fires from there)."""
         return GrabState(
             hand=state.hand,
             target=state.target,
+            anchor=state.anchor,
+            pull=state.pull,
             just_released=True,
             release_peak=state.peak,
         )
