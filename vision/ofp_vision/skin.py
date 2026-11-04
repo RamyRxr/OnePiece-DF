@@ -291,7 +291,7 @@ def hand_silhouette(
 ) -> np.ndarray:
     """One hand's real outline over `window`, feathered, 0..1.
 
-    For the fire effect, which covers the hand rather than stretching its
+    For the fire effect, which lights the hand rather than stretching its
     pixels: the segmentation's body-skin labels give the actual fingers and
     wrist, clipped to this hand so the other hand or the face cannot leak in.
     Where the model has lost the hand (thin fingers at webcam resolution, or
