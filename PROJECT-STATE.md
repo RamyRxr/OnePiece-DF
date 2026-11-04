@@ -12,8 +12,8 @@
 | | |
 |---|---|
 | Last updated | 2026-11-04 |
-| Last commit | `2560b1d` — *start work on fire df* (2026-11-02) |
-| Working tree | Uncommitted: fruit switch, snap fix, fire gestures/visuals (see §11) |
+| Last feature commit | `c9cf48e` — *fire: fist-open, shake, sequential fingertips* |
+| Working tree | Clean (this docs update is the only follow-up) |
 | Test suite | **267 passed**, no camera required |
 | Current step | Ace's fire is lab-only: fist-open ignition, shake extinguish, sequential fingertip flames |
 | Next step | Decide: put the fruit + fire on the protocol, or scaffold Unity (§12) |
@@ -622,7 +622,7 @@ light, shake to put out, and flames earned one fingertip at a time.
 poses against a real camera; then put the fruit + fire on the protocol or
 scaffold Unity (§12).
 
-**Commit:** uncommitted.
+**Commit:** `c9cf48e` — *fire: fist-open, shake, sequential fingertips*.
 
 ### 2026-11-04 — One fruit at a time (rubber ↔ fire switch)
 
