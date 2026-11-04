@@ -13,7 +13,7 @@
 |---|---|
 | Last updated | 2026-11-04 |
 | Last feature commit | `c9cf48e` — *fire: fist-open, shake, sequential fingertips* |
-| Working tree | Clean (this docs update is the only follow-up) |
+| Working tree | Clean |
 | Test suite | **267 passed**, no camera required |
 | Current step | Ace's fire is lab-only: fist-open ignition, shake extinguish, sequential fingertip flames |
 | Next step | Decide: put the fruit + fire on the protocol, or scaffold Unity (§12) |
@@ -581,14 +581,18 @@ light, shake to put out, and flames earned one fingertip at a time.
   rate, and separate hand/finger alpha.
 - `vision/ofp_vision/gestures.py` — `HandSigns.ignite` and `.shake`;
   `SignTracker` detects a quick fist→open (edge-triggered, held fists do not
-  fire) and a rapid side-to-side wrist shake measured in palm lengths. Snap is
-  still reported but no longer toggles the fire. Added `FLAME_FINGERS` with
-  the thumb as the capstone.
+  fire) and a rapid side-to-side wrist shake measured in palm lengths. Ignition
+  clears the shake window, so pre-ignition motion cannot put the new fire out
+  on the next frame. Snap is still reported but no longer toggles the fire.
+  Added `FLAME_FINGERS` with the thumb as the capstone.
 - `vision/ofp_vision/fire.py` — replaced the snap toggle with `_light` and
   `_extinguish`; added per-finger state and the sequential count gate; added
   teardrop fingertip flames with additive blending, flicker and embers; changed
   `_draw_hand` from an opaque silhouette fill to a hot rim + faint body tint +
-  flame streaks; `status()` now reports `fingers` and `flames`.
+  flame streaks; re-lighting resets fingertip levels so it always starts at
+  one; the thumb flame needs at least one finger still extended, so a fist
+  cannot leave a lone thumb flame; `status()` now reports `fingers` and
+  `flames`.
 - `vision/ofp_vision/server.py` — fire-mode status hint and comment updated to
   the new gestures.
 - `vision/tests/hand_fixture.py` — `moved()` helper for shake tests.
@@ -622,7 +626,8 @@ light, shake to put out, and flames earned one fingertip at a time.
 poses against a real camera; then put the fruit + fire on the protocol or
 scaffold Unity (§12).
 
-**Commit:** `c9cf48e` — *fire: fist-open, shake, sequential fingertips*.
+**Commit:** `c9cf48e` — *fire: fist-open, shake, sequential fingertips*, plus
+small follow-up tweaks.
 
 ### 2026-11-04 — One fruit at a time (rubber ↔ fire switch)
 

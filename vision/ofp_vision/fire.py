@@ -306,6 +306,9 @@ class Fire:
         state.lit = True
         state.lit_fingers = 0
         state.last_finger_count = 0
+        # Re-lighting while old fingertip flames are still fading must still
+        # start from one, not inherit the previous hand's flames.
+        state.finger_levels = {digit: 0.0 for digit in FLAME_FINGERS}
         state.flash = 1.0
         lm = state.hand.landmarks if state.hand is not None else []
         if not lm:
@@ -401,6 +404,7 @@ class Fire:
         if (
             state.lit
             and state.lit_fingers >= len(FLAME_FINGERS) - 1
+            and count > 0
             and signs is not None
             and signs.out.get("thumb", False)
         ):

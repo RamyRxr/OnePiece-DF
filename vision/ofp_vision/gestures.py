@@ -213,6 +213,9 @@ class SignTracker:
             ):
                 ignite = True
                 self._last_ignite_ms = t_ms
+                # Motion before the ignition must not put the new fire out on
+                # the very next frame; start the shake window fresh.
+                self._motion.clear()
             self._fist_since = None
         self._was_fist = fist
 
