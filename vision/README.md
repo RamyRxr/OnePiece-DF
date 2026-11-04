@@ -8,9 +8,19 @@ avatar.
 This is the **Signal Lab**: the point of this service right now is not to be
 shippable, it is to prove the perception works and to make it tunable.
 
+> For the full project state, working rules and dated work log, read
+> [`../PROJECT-STATE.md`](../PROJECT-STATE.md). This README covers the vision
+> service itself.
+
 ---
 
 ## The main interaction: pinch, pull, let go
+
+The lab shows **one devil fruit at a time** (key `f` switches, or set
+`FruitConfig.active` in `config.py`). The Gum-Gum fruit is the pinch-grab
+stretch below; Ace's Mera Mera fruit is the fire in the next section. The
+hidden fruit is not advanced at all, so its gestures cannot fire while it is
+away.
 
 ```
 pinch   thumb tip meets index tip on a target                  -> grab
@@ -139,6 +149,41 @@ Still to come: the stretch coming toward the camera in true perspective
 
 ---
 
+## Ace's fire: the Mera Mera fruit
+
+Switch to it with **f**. The hand is *lit*, not painted over: its real
+silhouette (the segmentation's body skin, or the landmark glove when that is
+missing) gets a hot rim, a faint body tint and flame streaks rising off its
+edge, so the camera image of the hand stays readable under the fire. Each
+earned fingertip carries its own teardrop flame.
+
+| Sign | Effect |
+|---|---|
+| fist, then open quickly | light the hand |
+| shake the hand side to side | put the fire out |
+| fist | the flame swells |
+| raise fingers one by one | earn a flame on each fingertip |
+| only the index up | a fireball floats above its tip; close the finger and it goes out |
+
+Fingertip flames are **sequential**: opening the whole hand from a fist lights
+only the first finger, and the count can only grow by one at a time. The thumb
+is the capstone - it lights only after all four fingers - so all five cannot
+come on at once. Lowering a finger hides its flame, but the earned count stays
+until the fire is shaken out.
+
+Ignition is a flash and a burst of embers; putting it out is a puff of smoke
+and embers falling away. Particles ride the hand's translation while the
+flames themselves still rise. Everything advances on the frame clock
+(`Frame.t_ms`), never wall time, so a recording replays the same and tests can
+step it.
+
+The signs are pure landmark geometry, scale-invariant against palm length
+([`gestures.py`](ofp_vision/gestures.py)); the effect is
+[`fire.py`](ofp_vision/fire.py), tuned in `FireConfig`. Like the stretch, it is
+cosmetic: if it fails, the plain picture is shown and tracking carries on.
+
+---
+
 ## The problem this solves
 
 A webcam gives you X and Y. A "pull" is mostly a **Z** movement — grab your
@@ -217,6 +262,7 @@ threshold (the grey tick). Drag the window's corner to resize it.
 | `c` | Recalibrate (3s neutral capture) |
 | `r` | Reset the baseline and recalibrate |
 | `h` | Clean view: hide the landmarks and grab drawings |
+| `f` | Switch devil fruit: Gum-Gum (rubber) ↔ Mera Mera (fire) |
 | `v` | Start / stop recording a clip (see below) |
 | `q` | Quit |
 
@@ -496,6 +542,8 @@ ofp_vision/
   filters.py     OneEuroFilter + Slope
   channels.py    per-channel filter / activate / release state machine
   grab.py        pinch-grab-pull, the main interaction  (pure, no mediapipe)
+  gestures.py    the fire's signs: fist-open, shake, fist, point (pure, no mediapipe)
+  fire.py        Ace's fire: lit hand, fingertip flames, embers, fireball (cosmetic)
   pipeline.py    features → calibration → channels → message, shared by server and replay
   landmarks.py   MediaPipe wrappers            (the only mediapipe import)
   capture.py     camera acquisition, device selected by NAME
@@ -544,12 +592,13 @@ skipping anything whose name contains "virtual", "obs", "snap" and friends.
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-249 tests, no camera required. They lock in the properties that matter:
+267 tests, no camera required. They lock in the properties that matter:
 scale invariance (multiply every landmark by 2 and nothing changes),
 responsiveness (move the cheekbone and the ear channel goes up),
 symmetry (a symmetric face gives exactly zero asymmetry), the calibration
 motion gate, one release per pull, the grab gesture end to end (grab, pull,
 head movement, hysteresis, dropouts, snap, both hands at once, fingers held
-where pinched and never from the air beside them), and the stretch effect's
-rules: only skin moves, eyes and teeth never do, the snap-back, and its
-speed.
+where pinched and never from the air beside them), the fire's signs and state
+(fist-open ignition, held fists not firing, one shake event, sequential
+fingertip flames, shake extinguish), and the stretch effect's rules: only skin
+moves, eyes and teeth never do, the snap-back, and its speed.

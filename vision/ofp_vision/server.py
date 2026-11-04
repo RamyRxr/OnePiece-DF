@@ -31,7 +31,7 @@ import numpy as np
 from .baseline import load_baseline, save_baseline
 from .capture import CameraSource
 from .clips import ClipSwitch, frame_payload
-from .config import Config
+from .config import FRUIT_LABELS, FRUITS, Config
 from .fire import Fire
 from .lab import PANEL_HEIGHT, LabOverlay, fit_video
 from .landmarks import Tracker
@@ -332,6 +332,9 @@ class Lab:
     effect_failures: int = 0
     # The Ace fire, drawn over the camera image (see fire.py).
     fire: Fire | None = None
+    # Which devil fruit is active: "rubber" or "fire". One at a time - the
+    # lab never runs both effects (key f switches).
+    fruit: str = ""
     # Hide the landmarks and grab drawings (key h), to judge the effect.
     clean: bool = False
     # The REC line while a clip is being recorded (key v).
@@ -339,22 +342,45 @@ class Lab:
 
     def __post_init__(self) -> None:
         self.fire = Fire(self.config.fire)
+        if self.fruit not in FRUITS:
+            configured = self.config.fruit.active
+            self.fruit = configured if configured in FRUITS else FRUITS[0]
+
+    @property
+    def fruit_label(self) -> str:
+        return FRUIT_LABELS.get(self.fruit, self.fruit)
+
+    def switch_fruit(self) -> str:
+        """Switch to the other devil fruit. Only one power is ever active.
+
+        The fire is put out on the way out, so switching to the Gum-Gum fruit
+        and back does not resume a flame (or mid-air embers) from before.
+        """
+        self.fruit = "fire" if self.fruit == "rubber" else "rubber"
+        if self.fruit != "fire" and self.fire is not None:
+            self.fire.reset()
+        return self.fruit
 
     def _stretched(self, bgr: np.ndarray, frame: Frame, result: StepResult) -> np.ndarray:
-        """The camera image with the stretch drawn in - or, if the effect
-        fails, the plain image: it is cosmetic, and must never stop the
-        tracking and streaming."""
+        """The camera image with the active fruit's effect drawn in - or, if
+        the effect fails, the plain image: it is cosmetic, and must never stop
+        the tracking and streaming.
+
+        Only the active fruit runs. The other one is not advanced at all, so
+        its gestures cannot fire and its state cannot drift while hidden.
+        """
         out = bgr
-        try:
-            self.warper.update(result.grabs, frame, (bgr.shape[1], bgr.shape[0]))
-            out = self.warper.warp(bgr)
-        except Exception:
-            self.effect_failures += 1
-            if self.effect_failures == 1:
-                log.exception("Stretch effect failed; showing the plain image")
-            else:
-                log.debug("Stretch effect failed again (%d times)", self.effect_failures)
-        if self.fire is not None:
+        if self.fruit == "rubber":
+            try:
+                self.warper.update(result.grabs, frame, (bgr.shape[1], bgr.shape[0]))
+                out = self.warper.warp(bgr)
+            except Exception:
+                self.effect_failures += 1
+                if self.effect_failures == 1:
+                    log.exception("Stretch effect failed; showing the plain image")
+                else:
+                    log.debug("Stretch effect failed again (%d times)", self.effect_failures)
+        if self.fruit == "fire" and self.fire is not None:
             try:
                 self.fire.update(frame, (bgr.shape[1], bgr.shape[0]))
                 out = self.fire.draw(out)
@@ -396,14 +422,22 @@ class Lab:
 
         fps, infer_ms = stats
         opened = inputs.camera.opened
+        if self.fruit == "fire":
+            power = f"FRUIT fire - {self.fruit_label}   (f: switch to rubber)"
+            hint = "FIST then OPEN: light   SHAKE: put out   raise fingers 1>2>3>4>5"
+            live = self.fire.status_line() if self.fire is not None else "fire: off"
+        else:
+            power = f"FRUIT rubber - {self.fruit_label}   (f: switch to fire)"
+            hint = "PINCH a ring (ear, nose, jaw, cheek) or a finger, PULL, OPEN"
+            live = "stretch on - fire off (one fruit at a time)"
         status = [
             f"{opened.name if opened else 'synthetic'}   fps {fps:4.1f}   infer {infer_ms:3.0f}ms",
             f"face {'yes' if frame.face else 'NO'}   hands {len(frame.hands)}   "
             f"baseline {'CAPTURING' if pipeline.calibrating else 'READY'}",
-            "PINCH a ring (ear, nose, jaw, cheek) or a finger, PULL, OPEN",
-            "SNAP thumb+middle: fire on/off   fist: bigger   index up: ball",
-            self.fire.status_line() if self.fire is not None else "fire: off",
-            self.recording or "c calibrate  r reset  h clean  v record  q quit",
+            power,
+            hint,
+            live,
+            self.recording or "f fruit  c calibrate  r reset  h clean  v record  q quit",
         ]
         if self.overlay is None:
             self.overlay = self._open_window((preview.shape[1], preview.shape[0]))
@@ -418,11 +452,17 @@ class Lab:
             grabs=result.grabs,
             snap_distance=self.config.grab.snap_distance,
             clean=self.clean,
+            # The rings and pull lines are the Gum-Gum interaction; Ace's
+            # fruit has its own language (fist-open, shake, raised fingers).
+            show_targets=self.fruit == "rubber",
         )
         cv2.imshow(WINDOW_TITLE, canvas)
         key = cv2.waitKey(1) & 0xFF
         if key == ord("h"):
             self.clean = not self.clean
+        elif key == ord("f"):
+            self.switch_fruit()
+            log.info("Devil fruit: %s", self.fruit_label)
         return key
 
 

@@ -190,6 +190,21 @@ class FireConfig:
     snap_window_ms: float = 260.0
     snap_cooldown_ms: float = 350.0
 
+    # Ignition: close the hand (a fist), then open it within this window. A
+    # fist held longer is just a fist, not an ignition. Cooldown stops a
+    # repeated open/close from firing twice.
+    ignite_window_ms: float = 700.0
+    ignite_cooldown_ms: float = 500.0
+    # Extinguish: a rapid side-to-side shake of the wrist, in palm lengths.
+    # `shake_span` is the total travel across the window; `shake_step` is the
+    # smallest movement counted as part of a swing; `shake_reversals` is how
+    # many direction changes make it a shake rather than a drift.
+    shake_window_ms: float = 650.0
+    shake_span: float = 0.65
+    shake_step: float = 0.06
+    shake_reversals: int = 3
+    shake_cooldown_ms: float = 700.0
+
     # Envelope timings, seconds: lighting up, going out, the fist swell, the
     # flame ball appearing / closing away, and the ignition flash.
     ignite_s: float = 0.22
@@ -197,13 +212,41 @@ class FireConfig:
     fist_s: float = 0.35
     orb_s: float = 0.24
     flash_s: float = 0.28
+    # A fingertip flame fades in/out this fast when it is lit or lowered.
+    finger_light_s: float = 0.18
     # How far above the hand the fire may rise and its fireball may float,
     # in palm lengths; and the fireball's radius.
     plume: float = 1.0
     orb_lift: float = 0.95
     orb_radius: float = 0.55
+    # Fingertip flame size, in palm lengths (half-width and height).
+    finger_flame_width: float = 0.10
+    finger_flame_height: float = 0.38
     # Flame particles per second at full level (a fist roughly triples it).
     spawn_rate: float = 150.0
+    # Extra embers off each lit fingertip, per second at full level.
+    finger_spawn_rate: float = 55.0
+    # How much of the hand the flame body tints. Low enough that the camera
+    # image of the hand stays readable under the fire.
+    hand_alpha: float = 0.52
+    # Fingertip flames are brighter and more opaque than the hand body.
+    finger_alpha: float = 0.62
+
+
+# The devil fruits the lab can show. One at a time: the Gum-Gum stretch and
+# Ace's fire are alternative powers, never simultaneous.
+FRUITS: tuple[str, ...] = ("rubber", "fire")
+FRUIT_LABELS: dict[str, str] = {
+    "rubber": "Gum-Gum",
+    "fire": "Mera Mera",
+}
+
+
+@dataclass
+class FruitConfig:
+    """Which devil fruit the lab starts with (key `f` switches it live)."""
+
+    active: str = "rubber"
 
 
 @dataclass
@@ -224,6 +267,7 @@ class Config:
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     grab: GrabConfig = field(default_factory=GrabConfig)
     fire: FireConfig = field(default_factory=FireConfig)
+    fruit: FruitConfig = field(default_factory=FruitConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     models_dir: Path = MODELS_DIR
     baseline_path: Path = VISION_DIR / "baseline.json"

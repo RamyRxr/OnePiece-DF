@@ -253,11 +253,14 @@ class LabOverlay:
         grabs: dict[str, GrabState] | None = None,
         snap_distance: float = 2.5,
         clean: bool = False,
+        show_targets: bool = True,
     ) -> np.ndarray:
         """The whole window: scaled video on top, panel underneath.
 
         `clean` leaves the video alone - no landmarks, rings or grab line -
-        so the stretch can be judged as it really looks.
+        so the stretch can be judged as it really looks. `show_targets` hides
+        just the Gum-Gum grab rings and pull lines: the fire fruit does not
+        use them, and one fruit is shown at a time.
         """
         if (video.shape[1], video.shape[0]) != self.video_size:
             video = cv2.resize(video, self.video_size, interpolation=cv2.INTER_LINEAR)
@@ -265,9 +268,10 @@ class LabOverlay:
             video = video.copy()
         if not clean:
             self.draw_frame(video, frame, mirror=mirror)
-            self.draw_targets(video, frame, mirror=mirror)
-            if grabs:
-                self.draw_grabs(video, grabs, mirror, snap_distance)
+            if show_targets:
+                self.draw_targets(video, frame, mirror=mirror)
+                if grabs:
+                    self.draw_grabs(video, grabs, mirror, snap_distance)
 
         panel = np.full((PANEL_HEIGHT, self.video_size[0], 3), PANEL_BG, dtype=np.uint8)
         self.draw_status(panel, status_lines, calibrate_progress)

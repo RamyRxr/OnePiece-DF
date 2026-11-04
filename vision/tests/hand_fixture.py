@@ -65,6 +65,14 @@ def make_hand(
     return HandObservation(handedness=side, landmarks=points)
 
 
+def moved(hand: HandObservation, dx: float = 0.0, dy: float = 0.0) -> HandObservation:
+    """The same pose shifted in the frame, for shake and tracking tests."""
+    return HandObservation(
+        handedness=hand.handedness,
+        landmarks=[(x + dx, y + dy, z) for x, y, z in hand.landmarks],
+    )
+
+
 def fingertip(hand: HandObservation, digit: str = "middle") -> tuple[float, float]:
     point = hand.landmarks[HAND_DIGITS[digit][3]]
     return (point[0], point[1])

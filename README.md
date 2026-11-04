@@ -10,6 +10,10 @@ cheek, ear, finger or hand, and the avatar stretches with them.
 
 The webcam feed never leaves the player's machine. Only derived numbers do.
 
+> **Working on this project?** Read [`PROJECT-STATE.md`](PROJECT-STATE.md)
+> first. It explains the architecture, where we stopped, the working rules,
+> and the dated work log. Update it every session.
+
 ---
 
 ## Where things are
@@ -40,9 +44,13 @@ The webcam feed never leaves the player's machine. Only derived numbers do.
   room never move (~11-22ms/frame at 720p). CPU fallback without a GPU
 - Websocket protocol v3 + Unity reference client (not yet compiled — no
   Unity project exists)
-- 249 tests, no camera needed
+- 267 tests, no camera needed
 - Synthetic mode, including a synthetic pinch-grab, to verify the whole
   chain without a camera
+- **Ace's fire fruit** in the lab: close the hand and open it to light up,
+  shake to put it out, raise fingers one by one for fingertip flames, fist to
+  swell the flame, index up for a fireball. Press `f` to switch fruits - the
+  lab runs one fruit at a time
 
 **Not done — needs a real face in front of the lens.**
 
@@ -111,3 +119,7 @@ would otherwise poison the baseline for the whole session.
   vision service selects by name for this reason.
 - MediaPipe's GPU delegate is broken in the Windows wheels. CPU it is —
   ~27ms/frame is fine.
+
+```powershell
+.venv\Scripts\python.exe -m ofp_vision.server
+```

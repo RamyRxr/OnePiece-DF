@@ -6,7 +6,7 @@ straight up, one that is in folds into the palm. No camera, no MediaPipe.
 
 from __future__ import annotations
 
-from hand_fixture import ASPECT, DIGITS, fingertip, make_hand, snap_closed
+from hand_fixture import ASPECT, DIGITS, fingertip, make_hand, moved, snap_closed
 
 from ofp_vision.config import FireConfig
 from ofp_vision.gestures import SignTracker, palm_length, signs
@@ -104,6 +104,48 @@ def test_closing_a_fist_does_not_snap() -> None:
     session.step(fist)
     session.step(snap_closed(fist))  # thumb onto the curled middle tip
     assert not session.step(fist).snap
+
+
+def test_a_fist_then_open_is_one_ignition() -> None:
+    session = Session()
+    fist = make_hand(only())
+    open_hand = make_hand()
+    found = [session.step(fist), session.step(open_hand), session.step(open_hand)]
+    assert [sign.ignite for sign in found] == [False, True, False]
+
+
+def test_a_fist_held_too_long_does_not_ignite_when_it_opens() -> None:
+    session = Session()
+    fist = make_hand(only())
+    session.step(fist)
+    for _ in range(30):  # well past ignite_window_ms
+        session.step(fist)
+    assert not session.step(make_hand()).ignite
+
+
+def test_a_snap_does_not_ignite_the_fire() -> None:
+    session = Session()
+    open_hand = make_hand()
+    session.step(open_hand)
+    session.step(snap_closed(open_hand))
+    assert not session.step(open_hand).ignite
+
+
+def test_a_shake_is_one_side_to_side_event() -> None:
+    session = Session()
+    hand = make_hand()
+    found = [
+        session.step(moved(hand, dx))
+        for dx in (0.0, 0.08, -0.08, 0.08, -0.08, 0.08)
+    ]
+    assert sum(sign.shake for sign in found) == 1
+
+
+def test_normal_hand_movement_does_not_shake() -> None:
+    session = Session()
+    hand = make_hand()
+    found = [session.step(moved(hand, 0.01 * i)) for i in range(8)]
+    assert not any(sign.shake for sign in found)
 
 
 def test_out_fingers_stay_out_through_the_hysteresis_band() -> None:

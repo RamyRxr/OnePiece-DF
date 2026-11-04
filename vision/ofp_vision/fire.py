@@ -1,21 +1,26 @@
-"""Ace's fire: the hand alight, a flame ball over the pointing finger.
+"""Ace's fire: the hand alight, a flame on every earned fingertip.
 
 The lab's rendering of the devil fruit, driven by `gestures.py`:
 
-    snap (thumb off index / middle)   light the hand, or put it out
+    fist, then open                   light the hand
+    shake the hand                    put the fire out
     fist                              the flame swells
-    only the index up                 a fireball floats above its tip and
-                                      goes out when the finger closes
+    raise fingers one by one          earn a flame on each fingertip
+    only the index up                 a fireball floats above its tip
 
-The hand is *covered* by fire, not just outlined: its real silhouette (the
-segmentation's body skin, or the landmark glove when that is missing) is the
-body of the flame, and particles rise off its edge. Ignition is a flash and a
-burst of embers; putting it out is a puff of smoke and embers falling away.
+The hand is lit rather than painted over: its real silhouette (the
+segmentation's body skin, or the landmark glove when that is missing) gets a
+hot rim and a faint body tint, and flame streaks rise off its edge. Each
+fingertip carries its own teardrop flame. Flames are earned sequentially:
+opening the whole hand at once lights only the first finger, and the count can
+only grow by one at a time. The thumb is the capstone and lights only after
+all four fingers.
 
-Everything is advanced by the frame clock (`Frame.t_ms`), never by wall time,
-so a recording replays the same and tests can step it. Particles live in
-image space but ride the hand's translation, so the fire stays attached while
-the flames still rise upward.
+Ignition is a flash and a burst of embers; putting it out is a puff of smoke
+and embers falling away. Everything is advanced by the frame clock
+(`Frame.t_ms`), never by wall time, so a recording replays the same and tests
+can step it. Particles live in image space but ride the hand's translation,
+so the fire stays attached while the flames still rise upward.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ import cv2
 import numpy as np
 
 from .config import FireConfig
-from .gestures import SignTracker, palm_length
+from .gestures import FLAME_FINGERS, SignTracker, palm_length
 from .skin import Window, hand_silhouette
 from .signals import Frame, HandObservation
 from .indices import HAND_DIGITS
@@ -99,12 +104,18 @@ class _HandFire:
     orb: float = 0.0
     flash: float = 0.0
     orb_flash: float = 0.0
+    # How many of the four counting fingers have been earned (0..4). The
+    # thumb is separate: it lights only once all four are earned.
+    lit_fingers: int = 0
+    last_finger_count: int = 0
+    finger_levels: dict[str, float] = field(default_factory=dict)
     signs: object = None
     window: Window | None = None
     silhouette: np.ndarray | None = None
     orb_at: tuple[float, float] | None = None
     anchor: tuple[float, float] | None = None
     spawn_debt: float = 0.0
+    finger_debt: float = 0.0
     orb_debt: float = 0.0
     particles: list[_Particle] = field(default_factory=list)
     orb_particles: list[_Particle] = field(default_factory=list)
@@ -157,6 +168,8 @@ class Fire:
                 "level": state.level,
                 "fist": state.fist,
                 "orb": state.orb,
+                "fingers": float(state.lit_fingers),
+                "flames": float(self._flame_count(state)),
             }
             for hand, state in self._states.items()
         }
@@ -169,12 +182,29 @@ class Fire:
             bits = [f"{hand[0]} {'LIT' if state.lit else 'out'}"]
             if state.level > 0.01:
                 bits.append(f"{state.level:.0%}")
+            flames = self._flame_count(state)
+            if flames:
+                bits.append(f"{flames} flame{'s' if flames != 1 else ''}")
             if state.fist > 0.05:
                 bits.append(f"fist {state.fist:.0%}")
             if state.orb > 0.01:
                 bits.append(f"orb {state.orb:.0%}")
             active.append(" ".join(bits))
-        return "fire: " + ("   ".join(active) if active else "off (snap to light)")
+        return "fire: " + ("   ".join(active) if active else "off (fist, then open)")
+
+    @staticmethod
+    def _flame_count(state: _HandFire) -> int:
+        return sum(1 for digit in FLAME_FINGERS if state.finger_levels.get(digit, 0.0) > 0.5)
+
+    def reset(self) -> None:
+        """Put every fire out and forget it: the fruit was switched away.
+
+        Without this, switching to the Gum-Gum fruit and back would resume
+        whatever was lit (and whatever embers were mid-air) as if the player
+        had never left.
+        """
+        self._states.clear()
+        self._last_t = None
 
     def update(self, frame: Frame, size: tuple[int, int]) -> None:
         """Advance the gestures, envelopes and particles by one frame."""
@@ -200,8 +230,11 @@ class Fire:
             present.add(hand.handedness)
 
             state.signs = state.tracker.update(hand, t, aspect)
-            if state.signs is not None and state.signs.snap:
-                self._toggle(state, t, size)
+            if state.signs is not None:
+                if state.signs.ignite and not state.lit:
+                    self._light(state, size)
+                elif state.signs.shake and state.lit:
+                    self._extinguish(state)
 
             # The fire rides the hand's translation; the flames themselves
             # still rise in image space.
@@ -224,6 +257,8 @@ class Fire:
             if state.missing_ms > LOST_GRACE_MS:
                 if state.lit:
                     state.lit = False
+                    state.lit_fingers = 0
+                    state.last_finger_count = 0
                     self._puff(state)
                 state.signs = None
 
@@ -233,7 +268,11 @@ class Fire:
         for hand in [
             hand
             for hand, state in self._states.items()
-            if state.missing_ms > FORGET_MS and state.level <= 0.0 and state.orb <= 0.0 and not state.smoke
+            if state.missing_ms > FORGET_MS
+            and state.level <= 0.0
+            and state.orb <= 0.0
+            and self._flame_count(state) == 0
+            and not state.smoke
         ]:
             del self._states[hand]
 
@@ -241,12 +280,19 @@ class Fire:
         """The image with the fire drawn in. Returns `bgr` itself when cold."""
         out = bgr
         for state in self._states.values():
-            if state.level <= 0.0 and state.orb <= 0.0 and not state.smoke:
+            if (
+                state.level <= 0.0
+                and state.orb <= 0.0
+                and self._flame_count(state) == 0
+                and not state.smoke
+            ):
                 continue
             if out is bgr:
                 out = bgr.copy()
             if state.level > 0.0 or state.flash > 0.0:
                 self._draw_hand(out, state)
+            if any(level > 0.01 for level in state.finger_levels.values()):
+                self._draw_fingers(out, state)
             if state.smoke:
                 self._draw_smoke(out, state)
             if state.orb > 0.0:
@@ -255,11 +301,11 @@ class Fire:
 
     # --- state --------------------------------------------------------------
 
-    def _toggle(self, state: _HandFire, t_ms: float, size: tuple[int, int]) -> None:
-        state.lit = not state.lit
-        if not state.lit:
-            self._puff(state)
-            return
+    def _light(self, state: _HandFire, size: tuple[int, int]) -> None:
+        """The fist opened: light the hand, starting from one fingertip."""
+        state.lit = True
+        state.lit_fingers = 0
+        state.last_finger_count = 0
         state.flash = 1.0
         lm = state.hand.landmarks if state.hand is not None else []
         if not lm:
@@ -282,6 +328,15 @@ class Fire:
                 heat=1.0,
                 buoyancy=state.palm * 0.6,
             )
+
+    def _extinguish(self, state: _HandFire) -> None:
+        """The hand shook: put every flame out and leave smoke behind."""
+        if not state.lit:
+            return
+        state.lit = False
+        state.lit_fingers = 0
+        state.last_finger_count = 0
+        self._puff(state)
 
     def _puff(self, state: _HandFire) -> None:
         """Smoke where the hand was: what is left when the fire goes out."""
@@ -319,6 +374,44 @@ class Fire:
             dt / max(0.01, self.config.fist_s),
         )
 
+        # Fingertip flames are earned one at a time. Opening the whole hand
+        # from a fist lights only the first finger; the count can only grow by
+        # exactly one, so a jump from one to five does nothing. The count is
+        # kept while fingers are lowered (the flames themselves fade out), so
+        # the player does not have to re-earn a flame every time they curl.
+        signs = state.signs
+        extended = [
+            digit
+            for digit in FLAME_FINGERS[:-1]
+            if signs is not None and signs.out.get(digit, False)
+        ]
+        count = len(extended)
+        if state.lit:
+            if state.lit_fingers == 0 and count > 0:
+                state.lit_fingers = 1
+            elif (
+                count == state.lit_fingers + 1
+                and count != state.last_finger_count
+            ):
+                state.lit_fingers = min(len(FLAME_FINGERS) - 1, state.lit_fingers + 1)
+        else:
+            state.lit_fingers = 0
+        state.last_finger_count = count
+        lit_digits = set(extended[: state.lit_fingers]) if state.lit else set()
+        if (
+            state.lit
+            and state.lit_fingers >= len(FLAME_FINGERS) - 1
+            and signs is not None
+            and signs.out.get("thumb", False)
+        ):
+            lit_digits.add("thumb")
+        for digit in FLAME_FINGERS:
+            state.finger_levels[digit] = _approach(
+                state.finger_levels.get(digit, 0.0),
+                1.0 if digit in lit_digits else 0.0,
+                dt / max(0.01, self.config.finger_light_s),
+            )
+
         index_only = state.lit and state.signs is not None and state.signs.index_only
         was_orb = state.orb
         state.orb = _approach(state.orb, 1.0 if index_only else 0.0, dt / max(0.01, self.config.orb_s))
@@ -333,6 +426,8 @@ class Fire:
 
         if state.level > 0.0:
             self._spawn(state, dt)
+        if any(level > 0.01 for level in state.finger_levels.values()):
+            self._spawn_fingers(state, dt)
         if state.orb > 0.0:
             self._spawn_orb(state, dt)
         self._move(state, dt)
@@ -467,6 +562,40 @@ class Fire:
                     buoyancy=palm * 1.5,
                 )
 
+    def _spawn_fingers(self, state: _HandFire, dt: float) -> None:
+        """A few embers off the earned fingertips, so the candles feel hot."""
+        if state.hand is None:
+            return
+        palm = state.palm
+        lit = [
+            digit
+            for digit in FLAME_FINGERS
+            if state.finger_levels.get(digit, 0.0) > 0.15
+        ]
+        if not lit:
+            return
+        state.finger_debt += self.config.finger_spawn_rate * len(lit) * dt
+        count = min(int(state.finger_debt), 12)
+        state.finger_debt -= count
+        lm = state.hand.landmarks
+        for _ in range(count):
+            digit = lit[int(self._rng.integers(len(lit)))]
+            tip = lm[HAND_DIGITS[digit][3]]
+            x = tip[0] * state.size[0] + self._rng.normal(0.0, palm * 0.06)
+            y = tip[1] * state.size[1] - self._rng.uniform(0.0, palm * 0.10)
+            self._spawn_particle(
+                state.particles,
+                x,
+                y,
+                vx=self._rng.normal(0.0, palm * 0.20),
+                vy=-palm * self._rng.uniform(0.8, 1.8),
+                life=self._rng.uniform(0.25, 0.55),
+                size=palm * self._rng.uniform(0.008, 0.022),
+                grow=palm * 0.012,
+                heat=self._rng.uniform(0.8, 1.0),
+                buoyancy=palm * 1.4,
+            )
+
     @staticmethod
     def _edges(silhouette: np.ndarray) -> tuple[tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray] | None]:
         """Boundary pixels of the hand's fire, and its top edge (where fire
@@ -559,10 +688,22 @@ class Fire:
         window = state.window
         height, width = window.shape
         palm = state.palm
+        mask = state.silhouette
         noise = self._noise_field((height, width), self._seconds)
-        body = state.silhouette * (0.45 + 0.30 * noise)
+
+        # The hand is lit, not replaced: a hot rim, a faint body tint that is
+        # strongest toward the fingers, and flame streaks rising off the edge.
+        # The old version painted the whole silhouette nearly opaque, which
+        # read as an orange glove over the camera image.
+        binary = (mask > 0.5).astype(np.uint8)
+        eroded = cv2.erode(binary, np.ones((3, 3), np.uint8)).astype(np.float32)
+        rim = np.clip(mask - eroded, 0.0, 1.0)
+        rim = cv2.GaussianBlur(rim, (0, 0), max(1.0, palm * 0.025))
+        yy = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, np.newaxis]
+        top_weight = np.clip(1.0 - 0.85 * yy, 0.15, 1.0)
+        body = mask * (0.08 + 0.20 * noise) * top_weight
         if state.flash > 0.0:
-            body = body + state.flash * 0.8 * state.silhouette
+            body = body + state.flash * 0.5 * mask
 
         plume = np.zeros((height, width), dtype=np.float32)
         for particle in state.particles:
@@ -570,11 +711,85 @@ class Fire:
             radius = max(1, int(particle.size))
             if -radius <= x < width + radius and -radius <= y < height + radius:
                 fade = 1.0 - particle.age / particle.life
-                cv2.circle(plume, (int(x), int(y)), radius, float(particle.heat * fade), -1)
+                heat = float(particle.heat * fade)
+                speed = math.hypot(particle.vx, particle.vy)
+                if speed > 1e-3:
+                    tail = min(palm * 0.16, speed * 0.035)
+                    ex = x - particle.vx / speed * tail
+                    ey = y - particle.vy / speed * tail
+                else:
+                    ex, ey = x, y
+                cv2.line(
+                    plume,
+                    (int(ex), int(ey)),
+                    (int(x), int(y)),
+                    heat,
+                    radius,
+                )
         plume = cv2.GaussianBlur(plume, (0, 0), max(1.2, palm * 0.035))
-        glow = cv2.GaussianBlur(state.silhouette, (0, 0), max(1.0, palm * 0.10)) * 0.30
-        heat = np.clip(body + plume * 0.85 + glow, 0.0, 1.0)
-        self._paint(out, window, heat, state.level)
+        glow = cv2.GaussianBlur(mask, (0, 0), max(1.0, palm * 0.10)) * 0.22
+        heat = np.clip(body + rim * 0.95 + glow + plume * 0.90, 0.0, 1.0)
+        self._paint(
+            out,
+            window,
+            heat,
+            state.level,
+            alpha_scale=self.config.hand_alpha,
+        )
+
+    def _draw_fingers(self, out: np.ndarray, state: _HandFire) -> None:
+        if state.hand is None or state.size == (0, 0):
+            return
+        for digit in FLAME_FINGERS:
+            level = state.finger_levels.get(digit, 0.0)
+            if level > 0.01:
+                self._draw_finger_flame(out, state, digit, level)
+
+    def _draw_finger_flame(
+        self,
+        out: np.ndarray,
+        state: _HandFire,
+        digit: str,
+        level: float,
+    ) -> None:
+        """A teardrop flame standing on one fingertip."""
+        if state.hand is None:
+            return
+        tip = state.hand.landmarks[HAND_DIGITS[digit][3]]
+        cx = tip[0] * state.size[0]
+        cy = tip[1] * state.size[1]
+        palm = max(6.0, state.palm)
+        width = max(3.0, palm * self.config.finger_flame_width)
+        height = max(5.0, palm * self.config.finger_flame_height)
+        reach_x = int(width * 2.4 + 2)
+        reach_y = int(height * 1.35 + 2)
+        x0 = max(0, int(cx) - reach_x)
+        y0 = max(0, int(cy) - reach_y)
+        x1 = min(state.size[0], int(cx) + reach_x + 1)
+        y1 = min(state.size[1], int(cy) + int(height * 0.25) + 2)
+        if x0 >= x1 or y0 >= y1:
+            return
+        window = Window(x0, y0, x1, y1)
+        yy, xx = np.mgrid[0 : window.shape[0], 0 : window.shape[1]].astype(np.float32)
+        dx = (xx + window.x0 - cx) / width
+        up = (cy - (yy + window.y0)) / height
+        phase = float(HAND_DIGITS[digit][3]) * 0.9
+        dx = dx - math.sin(self._seconds * 6.0 + phase) * 0.16 * np.clip(up, 0.0, 1.0)
+        taper = np.clip(1.0 - 0.72 * np.clip(up, 0.0, 1.0), 0.18, 1.0)
+        body = np.clip(1.0 - (dx / taper) ** 2, 0.0, 1.0) * np.clip(1.0 - up, 0.0, 1.0) ** 0.7
+        base = np.exp(
+            -((dx / 0.55) ** 2 + (np.clip(up, -0.35, 0.55) / 0.20) ** 2)
+        )
+        noise = self._noise_field(window.shape, self._seconds * 2.2 + phase)
+        heat = np.clip(body * (0.70 + 0.30 * noise) + base * 0.60, 0.0, 1.0)
+        self._paint(
+            out,
+            window,
+            heat,
+            level,
+            additive=1.05,
+            alpha_scale=self.config.finger_alpha,
+        )
 
     def _draw_orb(self, out: np.ndarray, state: _HandFire) -> None:
         if state.orb_at is None:
@@ -634,12 +849,24 @@ class Fire:
         patch = patch * (1.0 - a) + SMOKE_COLOUR * a
         out[window.y0 : window.y1, window.x0 : window.x1] = np.clip(patch, 0.0, 255.0).astype(np.uint8)
 
-    def _paint(self, out: np.ndarray, window: Window, heat: np.ndarray, level: float, additive: float = CORE_GLOW) -> None:
+    def _paint(
+        self,
+        out: np.ndarray,
+        window: Window,
+        heat: np.ndarray,
+        level: float,
+        additive: float = CORE_GLOW,
+        alpha_scale: float = 1.0,
+    ) -> None:
         """Composite a heat field over the window: colour by heat, alpha by
-        heat, and the hottest part added as a glow."""
+        heat, and the hottest part added as a glow.
+
+        `alpha_scale` below 1 keeps the camera image readable under the flame;
+        the additive core still glows through it.
+        """
         indices = np.clip(heat * 255.0, 0.0, 255.0).astype(np.uint8)
         colour = self._lut[indices]
-        alpha = np.clip(heat / ALPHA_HEAT, 0.0, 1.0) * level * 0.97
+        alpha = np.clip(heat / ALPHA_HEAT, 0.0, 1.0) * level * 0.97 * alpha_scale
         patch = out[window.y0 : window.y1, window.x0 : window.x1].astype(np.float32)
         a = alpha[..., None]
         patch = patch * (1.0 - a) + colour * a
