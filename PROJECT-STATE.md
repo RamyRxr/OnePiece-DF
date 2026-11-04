@@ -12,7 +12,7 @@
 | | |
 |---|---|
 | Last updated | 2026-11-04 |
-| Last feature commit | `c9cf48e` — *fire: fist-open, shake, sequential fingertips* |
+| Last feature commit | `18cd6b9` — *fire: harden re-light and thumb flame* |
 | Working tree | Clean |
 | Test suite | **267 passed**, no camera required |
 | Current step | Ace's fire is lab-only: fist-open ignition, shake extinguish, sequential fingertip flames |
