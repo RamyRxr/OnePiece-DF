@@ -486,7 +486,11 @@ Also update, in the same session:
 
 ## 9. Where we stopped
 
-**As of 2026-11-04 (after the fruit switch).**
+**As of 2026-11-04, after Ace's fire gestures and hand rendering.**
+
+**Status:** the fire work is finished in the lab and committed. The next
+session should start with real-camera tuning and the wire/Unity decision, not
+by rewriting the fire.
 
 ### 9.1 Done and verified
 
@@ -506,6 +510,7 @@ Also update, in the same session:
   advanced and drawn; fire is reset on the way out; Gum-Gum rings hidden in
   fire mode.
 - **267 tests pass** with no camera.
+- Fire work committed as `c9cf48e` + `18cd6b9`; docs follow-ups after.
 
 ### 9.2 Not done
 
@@ -539,6 +544,24 @@ Also update, in the same session:
   changing the sequence.
 - `tools-explanation.md` is **not** project documentation; it describes the
   machine's global Claude toolset. Ignore it when working on the game.
+
+### 9.4 Next session starts here
+
+1. **Real-camera pass.** From `vision/`, run
+   `.\.venv\Scripts\python.exe -m ofp_vision.server`, press `f`, and check:
+   - the hand reads as *lit*, not covered;
+   - fist → open lights it; a held fist does not;
+   - fingers earn flames one at a time
+     (index → middle → ring → pinky → thumb);
+   - a fist does not leave a lone thumb flame;
+   - shaking puts it out, and re-lighting starts at one flame.
+   If a gesture is unreliable, tune `FireConfig` (`ignite_window_ms`,
+   `shake_*`, `out_*`/`in_*`) before changing the sequence logic.
+2. **Decide the next half.** Either put the active fruit + fire state on the
+   protocol (`GAMEPLAY_CHANNELS`, `protocol.py`, Unity client), or scaffold the
+   Unity project. See §12.
+3. **Keep the loop.** Update §11, §9, and the header; run
+   `.\.venv\Scripts\python.exe -m pytest -q` (267 tests) before committing.
 
 ---
 
